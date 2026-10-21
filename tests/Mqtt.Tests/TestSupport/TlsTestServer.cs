@@ -23,9 +23,12 @@ internal sealed class TlsTestServer : IDisposable
 
     public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
 
-    public async Task<ServerConnection> AcceptAsync(CancellationToken ct = default)
+    public async Task<ServerConnection> AcceptAsync(CancellationToken ct = default) =>
+        await AuthenticateAsync(await _listener.AcceptSocketAsync(ct), ct);
+
+    /// <summary>Runs the server side of the TLS handshake on an accepted socket.</summary>
+    public static async Task<ServerConnection> AuthenticateAsync(Socket socket, CancellationToken ct = default)
     {
-        Socket socket = await _listener.AcceptSocketAsync(ct);
         var stream = new SslStream(new NetworkStream(socket, ownsSocket: true));
         X509Certificate? clientCertificate = null;
         await stream.AuthenticateAsServerAsync(

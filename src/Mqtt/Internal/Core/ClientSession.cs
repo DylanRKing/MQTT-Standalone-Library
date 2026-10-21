@@ -49,6 +49,7 @@ internal sealed class ClientSession : IAsyncDisposable
     private readonly OfflineQueue _offlineQueue;
     private readonly DuplicateCache _duplicates;
     private readonly ReconnectBackoff _backoff;
+    private readonly PublishRateLimiter? _rateLimiter;
     private readonly Dictionary<ushort, PendingSubscribe> _pendingSubscribes = [];
     private readonly Dictionary<string, MqttQos> _grantedSubscriptions = [];
     private readonly Lock _subscribeLock = new();
@@ -74,6 +75,7 @@ internal sealed class ClientSession : IAsyncDisposable
         _offlineQueue = new OfflineQueue(options.OfflineQueueCapacity, options.OfflineQueueFullMode);
         _duplicates = new DuplicateCache(_time);
         _backoff = new ReconnectBackoff(options.Reconnect, options.ReconnectDelayFloor, options.Random);
+        _rateLimiter = options.MaxPublishRate is int rate ? new PublishRateLimiter(rate, _time) : null;
         _transportOptions = new TransportOptions
         {
             Host = options.Host,
@@ -162,6 +164,7 @@ internal sealed class ClientSession : IAsyncDisposable
 
             try
             {
+                await WaitForPublishRateAsync(ct).ConfigureAwait(false);
                 await connection.SendAsync(new PublishPacket(topic, payload, MqttQos.AtMostOnce, retain), ct).ConfigureAwait(false);
                 return PublishResult.Sent;
             }
@@ -276,8 +279,31 @@ internal sealed class ClientSession : IAsyncDisposable
         _dispatcher.Complete();
     }
 
-    /// <summary>TCP, TLS, CONNECT and CONNACK within the connect timeout. Throws on refusal.</summary>
+    /// <summary>
+    /// TCP, TLS, CONNECT and CONNACK within the connect timeout, holding a connection throttle slot
+    /// if one is configured. Throws on refusal.
+    /// </summary>
     private async Task<ConnAckPacket> OpenAsync(Connection connection, CancellationToken ct)
+    {
+        ConnectionThrottle? throttle = _options.ConnectionThrottle;
+        if (throttle is null)
+        {
+            return await OpenCoreAsync(connection, ct).ConfigureAwait(false);
+        }
+
+        // Waiting for a slot is not part of the connect timeout.
+        await throttle.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return await OpenCoreAsync(connection, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            throttle.Release();
+        }
+    }
+
+    private async Task<ConnAckPacket> OpenCoreAsync(Connection connection, CancellationToken ct)
     {
         using var timeout = new CancellationTokenSource(_options.ConnectTimeout, _time);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
@@ -401,6 +427,7 @@ internal sealed class ClientSession : IAsyncDisposable
                 entry.Packet = packet;
             }
 
+            await WaitForPublishRateAsync(CancellationToken.None).ConfigureAwait(false);
             entry.SentTimestamp = _time.GetTimestamp();
             await connection.SendAsync(packet, CancellationToken.None).ConfigureAwait(false);
         }
@@ -429,6 +456,8 @@ internal sealed class ClientSession : IAsyncDisposable
     /// </summary>
     private async Task SendNewQos1Async(QueuedPublish item)
     {
+        // Before the entry is created, so time spent waiting does not count towards the ack timeout.
+        await WaitForPublishRateAsync(CancellationToken.None).ConfigureAwait(false);
         var entry = new InFlightPublish(
             new PublishPacket(item.Topic, item.Payload, MqttQos.AtLeastOnce, item.Retain, Dup: false, _packetIds.Allocate()),
             _time.GetTimestamp(),
@@ -818,6 +847,9 @@ internal sealed class ClientSession : IAsyncDisposable
 
         SetState(MqttConnectionState.Disconnected, reason);
     }
+
+    private ValueTask WaitForPublishRateAsync(CancellationToken ct) =>
+        _rateLimiter?.WaitAsync(ct) ?? ValueTask.CompletedTask;
 
     private void StopReconnect() => Interlocked.Exchange(ref _reconnectCts, null)?.Cancel();
 

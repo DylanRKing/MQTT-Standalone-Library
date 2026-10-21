@@ -17,7 +17,7 @@ Following the build order in the design plan:
 - [x] 2. Transport: TLS connect, read and write loops
 - [x] 3. Client core: connect, publish, subscribe, keep-alive, inbound dispatch
 - [x] 4. Resilience: reconnect, session modes, offline queue, duplicate filter
-- [ ] 5. Scale: connection throttle, rate limiter, soak test
+- [x] 5. Scale: connection throttle, rate limiter, soak test
 - [ ] 6. Production certificate provider
 
 ## Usage
@@ -47,8 +47,31 @@ Inbound QoS 1 redeliveries flagged DUP are filtered best-effort; retained replay
 `MqttMessage.Retain = true`. Publishing retained messages needs `iot:RetainPublish` in the
 device's IoT policy as well as `iot:Publish`.
 
+## Running many devices
+
+Each `MqttClient` is independent: no shared state, about 3 async loops and one timer each, and
+nothing blocks a thread. For many devices in one process:
+
+```csharp
+var throttle = new ConnectionThrottle(10);   // at most 10 TLS handshakes at once, shared
+var devices = Enumerable.Range(0, 100).Select(i => new MqttClient(baseOptions with
+{
+    ClientId = $"device-{i:000}",
+    ConnectionThrottle = throttle,           // also paces mass reconnects after a network drop
+    MaxPublishRate = 50,                     // optional: wait rather than exceed AWS's 100/s per connection
+})).ToList();
+await Task.WhenAll(devices.Select(d => d.ConnectAsync()));
+```
+
 ## Build and test
 
 ```
 dotnet test
+```
+
+The soak test (100 devices, every connection dropped periodically, checks no QoS 1 message is
+lost and memory stays flat) is skipped unless asked for:
+
+```
+MQTT_SOAK_MINUTES=240 MQTT_SOAK_DROP_SECONDS=60 dotnet test --filter SoakTests --logger "console;verbosity=detailed"
 ```

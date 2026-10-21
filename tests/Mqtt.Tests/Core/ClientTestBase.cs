@@ -46,6 +46,7 @@ public abstract class ClientTestBase : IAsyncLifetime
     internal async Task<(MqttClient Client, BrokerSession Broker)> ConnectAsync(MqttClientOptions? options = null)
     {
         MqttClient client = CreateClient(options);
+        var states = new StateRecorder(client);
         Task<BrokerSession> accept = Task.Run(async () =>
         {
             BrokerSession session = await AcceptAsync();
@@ -53,6 +54,10 @@ public abstract class ClientTestBase : IAsyncLifetime
             return session;
         });
         await client.ConnectAsync().WaitAsync(Timeout);
+
+        // State events are delivered asynchronously and in order. Waiting for this one means a
+        // StateRecorder the test attaches next sees only later changes.
+        await states.WaitForAsync(MqttConnectionState.Connected);
         return (client, await accept.WaitAsync(Timeout));
     }
 }

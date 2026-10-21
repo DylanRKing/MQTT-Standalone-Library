@@ -56,6 +56,19 @@ public sealed record MqttClientOptions
     /// <summary>Automatic reconnect settings; enabled by default.</summary>
     public ReconnectOptions Reconnect { get; init; } = new();
 
+    /// <summary>
+    /// Shared limit on concurrent connects across clients; null to connect immediately.
+    /// Pass the same instance to every client's options.
+    /// </summary>
+    public ConnectionThrottle? ConnectionThrottle { get; init; }
+
+    /// <summary>
+    /// Outbound publishes per second allowed on this connection, null for no limit. Publishes over
+    /// the rate wait instead of being sent. AWS discards publishes beyond 100 per second per
+    /// connection, inbound and outbound combined, so leave room for inbound traffic.
+    /// </summary>
+    public int? MaxPublishRate { get; init; }
+
     /// <summary>Receives log output; null for none.</summary>
     public IMqttLogger? Logger { get; init; }
 
@@ -115,6 +128,11 @@ public sealed record MqttClientOptions
         if (MaxInFlight is < 1 or > MaxInFlightLimit)
         {
             throw new ArgumentOutOfRangeException(nameof(MaxInFlight), MaxInFlight, $"MaxInFlight must be 1–{MaxInFlightLimit}.");
+        }
+
+        if (MaxPublishRate is < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(MaxPublishRate), MaxPublishRate, "MaxPublishRate must be at least 1, or null for no limit.");
         }
 
         if (OfflineQueueCapacity < 0)
