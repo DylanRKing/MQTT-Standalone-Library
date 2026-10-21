@@ -26,6 +26,9 @@ internal sealed class Connection(TimeProvider time)
 
     public long LastSentTimestamp => Volatile.Read(ref _lastSentTimestamp);
 
+    /// <summary>When CONNACK was accepted; used to spot connections dropped right after connecting.</summary>
+    public long ConnectedTimestamp { get; set; }
+
     /// <summary>When the outstanding PINGREQ was sent, or 0 when none is outstanding.</summary>
     public long PingSentTimestamp
     {

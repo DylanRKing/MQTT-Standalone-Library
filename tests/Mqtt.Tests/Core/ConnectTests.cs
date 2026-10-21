@@ -135,9 +135,9 @@ public class ConnectTests : ClientTestBase
     }
 
     [Fact]
-    public async Task BrokerDropsConnection_GoesDisconnectedWithReason()
+    public async Task BrokerDropsConnection_WithoutReconnect_GoesDisconnectedWithReason()
     {
-        var (client, broker) = await ConnectAsync();
+        var (client, broker) = await ConnectAsync(Broker.Options() with { Reconnect = ReconnectOptions.Disabled });
         var states = new StateRecorder(client);
 
         await broker.DisposeAsync();

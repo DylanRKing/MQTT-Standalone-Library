@@ -47,6 +47,15 @@ public sealed record MqttClientOptions
     /// <summary>Unacknowledged outbound QoS 1 publishes allowed at once; callers past this wait. At most 100.</summary>
     public int MaxInFlight { get; init; } = 20;
 
+    /// <summary>QoS 1 publishes held in memory while connecting or reconnecting.</summary>
+    public int OfflineQueueCapacity { get; init; } = 1_000;
+
+    /// <summary>What a QoS 1 publish does when the offline queue is full.</summary>
+    public OfflineQueueFullMode OfflineQueueFullMode { get; init; } = OfflineQueueFullMode.RejectNew;
+
+    /// <summary>Automatic reconnect settings; enabled by default.</summary>
+    public ReconnectOptions Reconnect { get; init; } = new();
+
     /// <summary>Receives log output; null for none.</summary>
     public IMqttLogger? Logger { get; init; }
 
@@ -57,8 +66,14 @@ public sealed record MqttClientOptions
     /// <summary>Overrides server certificate validation (tests; a pinned-root option later).</summary>
     internal RemoteCertificateValidationCallback? ServerCertificateValidator { get; init; }
 
-    /// <summary>Clock for keep-alive and ack deadlines; replaced in tests.</summary>
+    /// <summary>Clock for keep-alive, ack and reconnect timing; replaced in tests.</summary>
     internal TimeProvider TimeProvider { get; init; } = TimeProvider.System;
+
+    /// <summary>Shortest reconnect delay; AWS allows one CONNECT per second per client ID. Lowered in tests.</summary>
+    internal TimeSpan ReconnectDelayFloor { get; init; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>Jitter source for reconnect delays; seeded in tests.</summary>
+    internal Random Random { get; init; } = Random.Shared;
 
     internal void Validate()
     {
@@ -100,6 +115,31 @@ public sealed record MqttClientOptions
         if (MaxInFlight is < 1 or > MaxInFlightLimit)
         {
             throw new ArgumentOutOfRangeException(nameof(MaxInFlight), MaxInFlight, $"MaxInFlight must be 1–{MaxInFlightLimit}.");
+        }
+
+        if (OfflineQueueCapacity < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(OfflineQueueCapacity), OfflineQueueCapacity, "OfflineQueueCapacity cannot be negative.");
+        }
+
+        if (!Enum.IsDefined(OfflineQueueFullMode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(OfflineQueueFullMode), OfflineQueueFullMode, "Unknown OfflineQueueFullMode.");
+        }
+
+        if (Reconnect is null)
+        {
+            throw new ArgumentException("Reconnect is required; use ReconnectOptions.Disabled to turn it off.", nameof(Reconnect));
+        }
+
+        if (Reconnect.InitialDelay <= TimeSpan.Zero || Reconnect.MaxDelay < Reconnect.InitialDelay)
+        {
+            throw new ArgumentOutOfRangeException(nameof(Reconnect), "Reconnect delays must be positive, with MaxDelay at least InitialDelay.");
+        }
+
+        if (Reconnect.MaxAttempts is < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(Reconnect), Reconnect.MaxAttempts, "Reconnect.MaxAttempts must be at least 1, or null for unlimited.");
         }
     }
 }

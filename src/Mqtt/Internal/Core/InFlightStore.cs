@@ -2,14 +2,24 @@ using Mqtt.Internal.Codec.Packets;
 
 namespace Mqtt.Internal.Core;
 
-/// <summary>An outbound QoS 1 PUBLISH waiting for its PUBACK.</summary>
-internal sealed class InFlightPublish(PublishPacket packet, long sentTimestamp)
+/// <summary>
+/// An outbound QoS 1 PUBLISH waiting for its PUBACK. Kept across reconnects and resent: with the
+/// same packet ID and DUP set in a persistent session, or with a new packet ID in a clean one.
+/// </summary>
+internal sealed class InFlightPublish(PublishPacket packet, long sentTimestamp, TaskCompletionSource<PublishResult> completion)
 {
-    public PublishPacket Packet { get; } = packet;
+    private long _sentTimestamp = sentTimestamp;
 
-    public long SentTimestamp { get; } = sentTimestamp;
+    /// <summary>The packet as last sent. Replaced on resend.</summary>
+    public PublishPacket Packet { get; set; } = packet;
 
-    public TaskCompletionSource<PublishResult> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public long SentTimestamp
+    {
+        get => Volatile.Read(ref _sentTimestamp);
+        set => Volatile.Write(ref _sentTimestamp, value);
+    }
+
+    public TaskCompletionSource<PublishResult> Completion { get; } = completion;
 }
 
 /// <summary>
@@ -56,6 +66,27 @@ internal sealed class InFlightStore
             lock (_lock)
             {
                 return _entries.Count == 0 ? null : _entries.GetAt(0).Value.SentTimestamp;
+            }
+        }
+    }
+
+    /// <summary>Every entry, oldest first, without removing them.</summary>
+    public List<InFlightPublish> Snapshot()
+    {
+        lock (_lock)
+        {
+            return [.. _entries.Values];
+        }
+    }
+
+    /// <summary>Restarts every ack deadline, so a new connection is not judged on time spent offline.</summary>
+    public void TouchAll(long timestamp)
+    {
+        lock (_lock)
+        {
+            foreach (InFlightPublish entry in _entries.Values)
+            {
+                entry.SentTimestamp = timestamp;
             }
         }
     }

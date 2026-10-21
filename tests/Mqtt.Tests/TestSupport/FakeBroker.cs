@@ -22,6 +22,10 @@ internal sealed class FakeBroker : IDisposable
         ServerCertificateValidator = (_, certificate, _, _) =>
             certificate?.GetCertHashString() == TestCertificates.Server.Thumbprint,
         ConnectTimeout = TimeSpan.FromSeconds(5),
+
+        // Fast reconnects; real clients keep AWS's 1 s floor.
+        ReconnectDelayFloor = TimeSpan.FromMilliseconds(10),
+        Reconnect = new ReconnectOptions { InitialDelay = TimeSpan.FromMilliseconds(10), MaxDelay = TimeSpan.FromMilliseconds(50) },
     };
 
     public async Task<BrokerSession> AcceptAsync() => new(await _server.AcceptAsync().WaitAsync(BrokerSession.Timeout));

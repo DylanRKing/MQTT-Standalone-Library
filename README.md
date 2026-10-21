@@ -16,7 +16,7 @@ Following the build order in the design plan:
 - [x] 1. Codec: CONNECT/CONNACK, PUBLISH/PUBACK, SUBSCRIBE/SUBACK, PINGREQ/PINGRESP, DISCONNECT
 - [x] 2. Transport: TLS connect, read and write loops
 - [x] 3. Client core: connect, publish, subscribe, keep-alive, inbound dispatch
-- [ ] 4. Resilience: reconnect, session modes, offline queue, duplicate filter
+- [x] 4. Resilience: reconnect, session modes, offline queue, duplicate filter
 - [ ] 5. Scale: connection throttle, rate limiter, soak test
 - [ ] 6. Production certificate provider
 
@@ -36,9 +36,16 @@ await device.PublishAsync("sim/device-042/telemetry", payload, MqttQos.AtLeastOn
 await device.DisconnectAsync();
 ```
 
-Until step 4 lands, a lost connection is not recovered: the client goes to `Disconnected`,
-pending QoS 1 publishes and subscribes fail with `MqttConnectionLostException`, and QoS 1
-publishes while disconnected throw `InvalidOperationException`.
+A lost connection is recovered automatically with jittered backoff (1 s → 60 s). On recovery the
+client restores subscriptions, resends unacknowledged QoS 1 publishes, then drains the offline queue.
+While connecting or reconnecting, QoS 1 publishes wait in a bounded in-memory queue
+(`OfflineQueueCapacity`, default 1,000) and QoS 0 publishes return `DroppedOffline`. CONNACK
+refusals other than "server unavailable" and TLS authentication failures are not retried: the
+client goes to `Disconnected` and pending publishes fail with `MqttConnectionLostException`.
+
+Inbound QoS 1 redeliveries flagged DUP are filtered best-effort; retained replays arrive with
+`MqttMessage.Retain = true`. Publishing retained messages needs `iot:RetainPublish` in the
+device's IoT policy as well as `iot:Publish`.
 
 ## Build and test
 

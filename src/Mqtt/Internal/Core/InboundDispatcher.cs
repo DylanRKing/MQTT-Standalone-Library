@@ -3,8 +3,11 @@ using Mqtt.Internal.Codec.Packets;
 
 namespace Mqtt.Internal.Core;
 
-/// <summary>An inbound PUBLISH and the connection it arrived on (where its PUBACK must go).</summary>
-internal sealed record InboundPublish(PublishPacket Packet, Connection Connection);
+/// <summary>
+/// An inbound PUBLISH and the connection it arrived on (where its PUBACK must go).
+/// <paramref name="Deliver"/> is false for a filtered duplicate, which is only acknowledged.
+/// </summary>
+internal sealed record InboundPublish(PublishPacket Packet, Connection Connection, bool Deliver = true);
 
 /// <summary>
 /// Runs application handlers off the read loop. Messages go through a bounded channel and are

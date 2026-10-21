@@ -33,7 +33,7 @@ public class KeepAliveTests : ClientTestBase
     }
 
     [Fact]
-    public async Task PingReqUnanswered_ClosesConnectionAfterHalfKeepAlive()
+    public async Task PingReqUnanswered_DropsConnectionAfterHalfKeepAlive()
     {
         var (client, broker) = await ConnectAsync(Broker.Options() with { TimeProvider = _time });
         var states = new StateRecorder(client);
@@ -42,7 +42,7 @@ public class KeepAliveTests : ClientTestBase
         await broker.ReceiveAsync<PingReqPacket>();
         _time.Advance(TimeSpan.FromSeconds(30));
 
-        ConnectionStateChange change = await states.WaitForAsync(MqttConnectionState.Disconnected);
+        ConnectionStateChange change = await states.WaitForAsync(MqttConnectionState.Reconnecting);
         Assert.Contains("PINGREQ", change.Reason?.Message);
         await broker.AssertClosedAsync();
     }
@@ -66,9 +66,14 @@ public class KeepAliveTests : ClientTestBase
     }
 
     [Fact]
-    public async Task PubAckOverdue_ClosesConnection_AndFailsPublish()
+    public async Task PubAckOverdue_WithoutReconnect_ClosesConnection_AndFailsPublish()
     {
-        var (client, broker) = await ConnectAsync(Broker.Options() with { TimeProvider = _time, AckTimeout = TimeSpan.FromSeconds(30) });
+        var (client, broker) = await ConnectAsync(Broker.Options() with
+        {
+            TimeProvider = _time,
+            AckTimeout = TimeSpan.FromSeconds(30),
+            Reconnect = ReconnectOptions.Disabled,
+        });
 
         Task<PublishResult> publishing = client.PublishAsync("t", default, MqttQos.AtLeastOnce);
         await broker.ReceiveAsync<PublishPacket>();
