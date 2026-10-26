@@ -75,3 +75,30 @@ lost and memory stays flat) is skipped unless asked for:
 ```
 MQTT_SOAK_MINUTES=240 MQTT_SOAK_DROP_SECONDS=60 dotnet test --filter SoakTests --logger "console;verbosity=detailed"
 ```
+
+## Simple client
+
+`src/Mqtt.Simple` is a deliberately minimal alternative to the full library: one file
+(`SimpleMqttClient.cs`), MQTT 3.1.1 over TLS with a client certificate, QoS 0/1, and only
+connect, publish, subscribe and disconnect. It sends keep-alive pings but has no reconnect,
+offline queue, rate limiting or topic validation. If the connection drops, `Disconnected` fires
+and you create a new client.
+
+```csharp
+using var cert = SimpleMqttClient.LoadCertificate("device.pem.crt", "private.pem.key");
+await using var client = await SimpleMqttClient.ConnectAsync("abc123-ats.iot.eu-west-1.amazonaws.com", "my-thing", cert);
+client.MessageReceived += (topic, payload) => Console.WriteLine($"{topic}: {Encoding.UTF8.GetString(payload)}");
+await client.SubscribeAsync("demo/my-thing", qos: 1);
+await client.PublishAsync("demo/my-thing", "hello", qos: 1);
+await client.DisconnectAsync();
+```
+
+To try it against AWS, run the console demo. It subscribes to a topic, publishes each line you
+type, and prints whatever arrives. You can also send to it from the AWS console's MQTT test client.
+
+```
+dotnet run --project samples/Mqtt.Simple.Demo -- <endpoint> <clientId> <certificate.pem.crt> <private.pem.key> [topic]
+```
+
+The thing's IoT policy must allow `iot:Connect` for the client ID, plus `iot:Publish`,
+`iot:Subscribe` and `iot:Receive` for the topic (default `demo/<clientId>`).
