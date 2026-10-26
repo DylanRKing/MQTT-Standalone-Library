@@ -78,11 +78,16 @@ MQTT_SOAK_MINUTES=240 MQTT_SOAK_DROP_SECONDS=60 dotnet test --filter SoakTests -
 
 ## Simple client
 
-`src/Mqtt.Simple` is a deliberately minimal alternative to the full library: one file
-(`SimpleMqttClient.cs`), MQTT 3.1.1 over TLS with a client certificate, QoS 0/1, and only
-connect, publish, subscribe and disconnect. It sends keep-alive pings but has no reconnect,
+`src/Mqtt.Simple` is a deliberately minimal alternative to the full library: MQTT 3.1.1 over
+TLS with a client certificate, QoS 0/1, and only connect, publish, subscribe and disconnect. It sends keep-alive pings but has no reconnect,
 offline queue, rate limiting or topic validation. If the connection drops, `Disconnected` fires
 and you create a new client.
+
+| File | Role |
+| --- | --- |
+| `SimpleMqttClient.cs` | Public API: connect, publish, subscribe, disconnect; read and ping loops; waiting for acks. |
+| `Transport/MqttTransport.cs` | TLS connection to AWS; reads and writes whole packets. |
+| `Codec/MqttCodec.cs` | Builds outgoing packets and reads fields from incoming ones. |
 
 ```csharp
 using var cert = SimpleMqttClient.LoadCertificate("device.pem.crt", "private.pem.key");

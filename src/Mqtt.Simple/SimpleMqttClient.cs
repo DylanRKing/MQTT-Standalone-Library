@@ -1,9 +1,8 @@
 using System.Collections.Concurrent;
-using System.Net.Security;
-using System.Net.Sockets;
-using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using Mqtt.Simple.Codec;
+using Mqtt.Simple.Transport;
 
 namespace Mqtt.Simple;
 
@@ -15,16 +14,16 @@ namespace Mqtt.Simple;
 public sealed class SimpleMqttClient : IAsyncDisposable
 {
     private const int KeepAliveSeconds = 60;
+    private static readonly TimeSpan AckTimeout = TimeSpan.FromSeconds(30);
 
-    private readonly SslStream _stream;
-    private readonly SemaphoreSlim _writeLock = new(1, 1);
-    private readonly ConcurrentDictionary<ushort, TaskCompletionSource<byte[]>> _pendingAcks = new();
+    private readonly MqttTransport _transport;
+    private readonly ConcurrentDictionary<ushort, TaskCompletionSource<Packet>> _pendingAcks = new();
     private readonly CancellationTokenSource _stop = new();
     private Task _readLoop = Task.CompletedTask;
     private Task _pingLoop = Task.CompletedTask;
     private int _nextPacketId;
 
-    private SimpleMqttClient(SslStream stream) => _stream = stream;
+    private SimpleMqttClient(MqttTransport transport) => _transport = transport;
 
     /// <summary>Raised from the read loop for each message received: topic, then payload.</summary>
     public event Action<string, byte[]>? MessageReceived;
@@ -33,7 +32,7 @@ public sealed class SimpleMqttClient : IAsyncDisposable
     public event Action<Exception>? Disconnected;
 
     /// <summary>
-    /// Opens a TLS connection and sends CONNECT. Completes when the broker accepts it.
+    /// Opens a TLS connection and sends CONNECT. Completes when AWS accepts it.
     /// </summary>
     /// <param name="host">AWS IoT endpoint, e.g. <c>abc123-ats.iot.eu-west-1.amazonaws.com</c>.</param>
     /// <param name="clientId">Client ID; for AWS normally the thing name.</param>
@@ -46,49 +45,26 @@ public sealed class SimpleMqttClient : IAsyncDisposable
         int port = 8883,
         CancellationToken ct = default)
     {
-        var tcp = new TcpClient { NoDelay = true };
-        SslStream? stream = null;
+        MqttTransport transport = await MqttTransport.ConnectAsync(host, port, certificate, ct);
         try
         {
-            await tcp.ConnectAsync(host, port, ct);
-            stream = new SslStream(tcp.GetStream(), leaveInnerStreamOpen: false);
-            await stream.AuthenticateAsClientAsync(
-                new SslClientAuthenticationOptions
-                {
-                    TargetHost = host,
-                    ClientCertificates = [certificate],
-                    EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
-                },
-                ct);
-
-            var client = new SimpleMqttClient(stream);
-            await client.WriteAsync(Connect(clientId), ct);
-
-            (byte header, byte[] body) = await client.ReadPacketAsync(ct);
-            if (header >> 4 != 2 || body.Length < 2)
+            await transport.WriteAsync(MqttCodec.Connect(clientId, KeepAliveSeconds), ct);
+            int code = MqttCodec.ConnAckReturnCode(await transport.ReadAsync(ct));
+            if (code != 0)
             {
-                throw new IOException("Expected CONNACK.");
+                throw new IOException($"AWS refused the connection, CONNACK code {code}.");
             }
-
-            if (body[1] != 0)
-            {
-                throw new IOException($"Broker refused the connection, CONNACK code {body[1]}.");
-            }
-
-            client._readLoop = Task.Run(client.ReadLoopAsync);
-            client._pingLoop = Task.Run(client.PingLoopAsync);
-            return client;
         }
         catch
         {
-            if (stream is not null)
-            {
-                await stream.DisposeAsync();
-            }
-
-            tcp.Dispose();
+            await transport.DisposeAsync();
             throw;
         }
+
+        var client = new SimpleMqttClient(transport);
+        client._readLoop = Task.Run(client.ReadLoopAsync);
+        client._pingLoop = Task.Run(client.PingLoopAsync);
+        return client;
     }
 
     /// <summary>
@@ -106,45 +82,29 @@ public sealed class SimpleMqttClient : IAsyncDisposable
         PublishAsync(topic, Encoding.UTF8.GetBytes(payload), qos, ct);
 
     /// <summary>
-    /// Publishes a message. QoS 0 completes once written; QoS 1 completes when the broker's PUBACK arrives.
+    /// Publishes a message. QoS 0 completes once written; QoS 1 completes when the PUBACK arrives.
     /// </summary>
     public async Task PublishAsync(string topic, byte[] payload, int qos = 0, CancellationToken ct = default)
     {
-        var body = new List<byte>();
-        AddString(body, topic);
-        ushort packetId = 0;
-        if (qos > 0)
-        {
-            packetId = NextPacketId();
-            AddUInt16(body, packetId);
-        }
-
-        body.AddRange(payload);
-        byte header = (byte)(0x30 | (qos > 0 ? 0x02 : 0x00));
-
         if (qos == 0)
         {
-            await WriteAsync(Frame(header, body), ct);
+            await _transport.WriteAsync(MqttCodec.Publish(topic, payload, 0, 0), ct);
             return;
         }
 
-        await SendAndWaitForAckAsync(packetId, Frame(header, body), ct);
+        ushort packetId = NextPacketId();
+        await SendAndWaitForAckAsync(packetId, MqttCodec.Publish(topic, payload, qos, packetId), ct);
     }
 
-    /// <summary>Subscribes to one topic filter. Completes when the broker's SUBACK arrives.</summary>
-    /// <exception cref="IOException">The broker refused the subscription.</exception>
+    /// <summary>Subscribes to one topic filter. Completes when the SUBACK arrives.</summary>
+    /// <exception cref="IOException">AWS refused the subscription.</exception>
     public async Task SubscribeAsync(string topicFilter, int qos = 0, CancellationToken ct = default)
     {
         ushort packetId = NextPacketId();
-        var body = new List<byte>();
-        AddUInt16(body, packetId);
-        AddString(body, topicFilter);
-        body.Add((byte)qos);
-
-        byte[] ack = await SendAndWaitForAckAsync(packetId, Frame(0x82, body), ct);
-        if (ack.Length < 3 || ack[2] == 0x80)
+        Packet subAck = await SendAndWaitForAckAsync(packetId, MqttCodec.Subscribe(topicFilter, qos, packetId), ct);
+        if (MqttCodec.SubAckReturnCode(subAck) == 0x80)
         {
-            throw new IOException($"Broker refused the subscription to '{topicFilter}'.");
+            throw new IOException($"AWS refused the subscription to '{topicFilter}'.");
         }
     }
 
@@ -158,7 +118,7 @@ public sealed class SimpleMqttClient : IAsyncDisposable
 
         try
         {
-            await WriteAsync([0xE0, 0x00], CancellationToken.None);
+            await _transport.WriteAsync(MqttCodec.Disconnect(), CancellationToken.None);
         }
         catch (IOException)
         {
@@ -170,14 +130,14 @@ public sealed class SimpleMqttClient : IAsyncDisposable
 
     public ValueTask DisposeAsync() => new(DisconnectAsync());
 
-    private async Task<byte[]> SendAndWaitForAckAsync(ushort packetId, byte[] frame, CancellationToken ct)
+    private async Task<Packet> SendAndWaitForAckAsync(ushort packetId, byte[] frame, CancellationToken ct)
     {
-        var ack = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var ack = new TaskCompletionSource<Packet>(TaskCreationOptions.RunContinuationsAsynchronously);
         _pendingAcks[packetId] = ack;
         try
         {
-            await WriteAsync(frame, ct);
-            return await ack.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+            await _transport.WriteAsync(frame, ct);
+            return await ack.Task.WaitAsync(AckTimeout, ct);
         }
         finally
         {
@@ -191,17 +151,23 @@ public sealed class SimpleMqttClient : IAsyncDisposable
         {
             while (true)
             {
-                (byte header, byte[] body) = await ReadPacketAsync(_stop.Token);
-                switch (header >> 4)
+                Packet packet = await _transport.ReadAsync(_stop.Token);
+                switch (packet.Type)
                 {
-                    case 3: // PUBLISH
-                        await HandlePublishAsync(header, body);
-                        break;
-                    case 4: // PUBACK
-                    case 9: // SUBACK
-                        if (_pendingAcks.TryGetValue((ushort)((body[0] << 8) | body[1]), out var ack))
+                    case PacketType.Publish:
+                        IncomingPublish publish = MqttCodec.ReadPublish(packet);
+                        if (publish.Qos > 0)
                         {
-                            ack.TrySetResult(body);
+                            await _transport.WriteAsync(MqttCodec.PubAck(publish.PacketId), _stop.Token);
+                        }
+
+                        MessageReceived?.Invoke(publish.Topic, publish.Payload);
+                        break;
+                    case PacketType.PubAck:
+                    case PacketType.SubAck:
+                        if (_pendingAcks.TryGetValue(MqttCodec.PacketId(packet), out var ack))
+                        {
+                            ack.TrySetResult(packet);
                         }
 
                         break;
@@ -219,22 +185,6 @@ public sealed class SimpleMqttClient : IAsyncDisposable
         }
     }
 
-    private async Task HandlePublishAsync(byte header, byte[] body)
-    {
-        int qos = (header >> 1) & 0x03;
-        int topicLength = (body[0] << 8) | body[1];
-        string topic = Encoding.UTF8.GetString(body, 2, topicLength);
-        int offset = 2 + topicLength;
-        if (qos > 0)
-        {
-            byte[] pubAck = [0x40, 0x02, body[offset], body[offset + 1]];
-            offset += 2;
-            await WriteAsync(pubAck, _stop.Token);
-        }
-
-        MessageReceived?.Invoke(topic, body[offset..]);
-    }
-
     private async Task PingLoopAsync()
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(KeepAliveSeconds / 2));
@@ -242,51 +192,12 @@ public sealed class SimpleMqttClient : IAsyncDisposable
         {
             while (await timer.WaitForNextTickAsync(_stop.Token))
             {
-                await WriteAsync([0xC0, 0x00], _stop.Token);
+                await _transport.WriteAsync(MqttCodec.PingReq(), _stop.Token);
             }
         }
         catch
         {
             // Stopped, or the read loop will report the failure.
-        }
-    }
-
-    private async Task<(byte Header, byte[] Body)> ReadPacketAsync(CancellationToken ct)
-    {
-        var one = new byte[1];
-        await _stream.ReadExactlyAsync(one, ct);
-        byte header = one[0];
-
-        int length = 0;
-        for (int shift = 0; ; shift += 7)
-        {
-            await _stream.ReadExactlyAsync(one, ct);
-            length |= (one[0] & 0x7F) << shift;
-            if ((one[0] & 0x80) == 0)
-            {
-                break;
-            }
-        }
-
-        var body = new byte[length];
-        await _stream.ReadExactlyAsync(body, ct);
-        return (header, body);
-    }
-
-    private async Task WriteAsync(byte[] frame, CancellationToken ct)
-    {
-        await _writeLock.WaitAsync(ct);
-        try
-        {
-            await _stream.WriteAsync(frame, ct);
-        }
-        catch (ObjectDisposedException ex)
-        {
-            throw new IOException("The connection is closed.", ex);
-        }
-        finally
-        {
-            _writeLock.Release();
         }
     }
 
@@ -298,7 +209,7 @@ public sealed class SimpleMqttClient : IAsyncDisposable
         }
 
         await _stop.CancelAsync();
-        await _stream.DisposeAsync();
+        await _transport.DisposeAsync();
         foreach (var ack in _pendingAcks.Values)
         {
             ack.TrySetException(new IOException("The connection closed."));
@@ -309,45 +220,5 @@ public sealed class SimpleMqttClient : IAsyncDisposable
     {
         // Packet IDs run 1..65535; 0 is not allowed.
         return (ushort)((Interlocked.Increment(ref _nextPacketId) % 65535) + 1);
-    }
-
-    private static byte[] Connect(string clientId)
-    {
-        var body = new List<byte>();
-        AddString(body, "MQTT");
-        body.Add(4);    // Protocol level 3.1.1
-        body.Add(0x02); // Clean session
-        AddUInt16(body, KeepAliveSeconds);
-        AddString(body, clientId);
-        return Frame(0x10, body);
-    }
-
-    private static byte[] Frame(byte header, List<byte> body)
-    {
-        var frame = new List<byte>(body.Count + 5) { header };
-        int length = body.Count;
-        do
-        {
-            byte digit = (byte)(length % 128);
-            length /= 128;
-            frame.Add(length > 0 ? (byte)(digit | 0x80) : digit);
-        }
-        while (length > 0);
-
-        frame.AddRange(body);
-        return [.. frame];
-    }
-
-    private static void AddString(List<byte> body, string value)
-    {
-        byte[] bytes = Encoding.UTF8.GetBytes(value);
-        AddUInt16(body, bytes.Length);
-        body.AddRange(bytes);
-    }
-
-    private static void AddUInt16(List<byte> body, int value)
-    {
-        body.Add((byte)(value >> 8));
-        body.Add((byte)value);
     }
 }
