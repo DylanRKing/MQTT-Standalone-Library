@@ -39,13 +39,11 @@ public sealed class SimpleMqttClient : IAsyncDisposable
     /// <param name="clientId">Client ID; for AWS normally the thing name.</param>
     /// <param name="certificate">Device certificate with its private key. See <see cref="LoadCertificate"/>.</param>
     /// <param name="port">8883 for MQTT over TLS.</param>
-    /// <param name="serverCertificateValidation">Leave null for AWS; set it to trust a local test broker.</param>
     public static async Task<SimpleMqttClient> ConnectAsync(
         string host,
         string clientId,
         X509Certificate2 certificate,
         int port = 8883,
-        RemoteCertificateValidationCallback? serverCertificateValidation = null,
         CancellationToken ct = default)
     {
         var tcp = new TcpClient { NoDelay = true };
@@ -60,7 +58,6 @@ public sealed class SimpleMqttClient : IAsyncDisposable
                     TargetHost = host,
                     ClientCertificates = [certificate],
                     EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
-                    RemoteCertificateValidationCallback = serverCertificateValidation,
                 },
                 ct);
 

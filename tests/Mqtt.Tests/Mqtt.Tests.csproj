@@ -21,7 +21,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Mqtt\Mqtt.csproj" />
-    <ProjectReference Include="..\..\src\Mqtt.Simple\Mqtt.Simple.csproj" />
   </ItemGroup>
 
 </Project>
