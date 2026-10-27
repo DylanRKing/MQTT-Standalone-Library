@@ -1,3 +1,4 @@
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Mqtt.Simple;
 
@@ -5,22 +6,23 @@ using Mqtt.Simple;
 // Messages arriving on the topic (yours echoed back, or ones sent from the AWS console's
 // MQTT test client) are printed. An empty line disconnects.
 //
-// Usage: dotnet run -- <endpoint> <clientId> <certificate.pem.crt> <private.pem.key> [topic]
+// Usage: dotnet run -- <endpoint> <clientId> <certificate.pem.crt> <private.pem.key> [AmazonRootCA1.pem] [topic]
 
 if (args.Length < 4)
 {
-    Console.WriteLine("Usage: dotnet run -- <endpoint> <clientId> <certificate.pem.crt> <private.pem.key> [topic]");
+    Console.WriteLine("Usage: dotnet run -- <endpoint> <clientId> <certificate.pem.crt> <private.pem.key> [AmazonRootCA1.pem] [topic]");
     return 1;
 }
 
 string endpoint = args[0];
 string clientId = args[1];
-string topic = args.Length > 4 ? args[4] : $"demo/{clientId}";
+string topic = args.Length > 5 ? args[5] : $"demo/{clientId}";
 
 using var certificate = SimpleMqttClient.LoadCertificate(args[2], args[3]);
+using X509Certificate2? rootCa = args.Length > 4 ? SimpleMqttClient.LoadRootCa(args[4]) : null;
 
 Console.WriteLine($"Connecting to {endpoint} as {clientId}...");
-await using SimpleMqttClient client = await SimpleMqttClient.ConnectAsync(endpoint, clientId, certificate);
+await using SimpleMqttClient client = await SimpleMqttClient.ConnectAsync(endpoint, clientId, certificate, rootCa);
 Console.WriteLine("Connected.");
 
 client.MessageReceived += (t, payload) => Console.WriteLine($"<- [{t}] {Encoding.UTF8.GetString(payload)}");

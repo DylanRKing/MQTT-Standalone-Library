@@ -102,8 +102,12 @@ To try it against AWS, run the console demo. It subscribes to a topic, publishes
 type, and prints whatever arrives. You can also send to it from the AWS console's MQTT test client.
 
 ```
-dotnet run --project samples/Mqtt.Simple.Demo -- <endpoint> <clientId> <certificate.pem.crt> <private.pem.key> [topic]
+dotnet run --project samples/Mqtt.Simple.Demo -- <endpoint> <clientId> <certificate.pem.crt> <private.pem.key> [AmazonRootCA1.pem] [topic]
 ```
+
+Most machines already trust Amazon's root CA. If the TLS handshake fails with a certificate
+chain error, pass `AmazonRootCA1.pem` (from https://www.amazontrust.com/repository/AmazonRootCA1.pem):
+in code, `ConnectAsync(endpoint, clientId, cert, SimpleMqttClient.LoadRootCa("AmazonRootCA1.pem"))`.
 
 The thing's IoT policy must allow `iot:Connect` for the client ID, plus `iot:Publish`,
 `iot:Subscribe` and `iot:Receive` for the topic (default `demo/<clientId>`).

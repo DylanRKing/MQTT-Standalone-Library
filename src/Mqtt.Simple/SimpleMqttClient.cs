@@ -37,19 +37,38 @@ public sealed class SimpleMqttClient : IAsyncDisposable
     /// <param name="host">AWS IoT endpoint, e.g. <c>abc123-ats.iot.eu-west-1.amazonaws.com</c>.</param>
     /// <param name="clientId">Client ID; for AWS normally the thing name.</param>
     /// <param name="certificate">Device certificate with its private key. See <see cref="LoadCertificate"/>.</param>
+    /// <param name="rootCa">
+    /// Amazon's root CA (<c>AmazonRootCA1.pem</c>, see <see cref="LoadRootCa"/>). Optional when the
+    /// machine already trusts it, which most do; pass it on machines that don't.
+    /// </param>
     /// <param name="port">8883 for MQTT over TLS.</param>
     public static async Task<SimpleMqttClient> ConnectAsync(
         string host,
         string clientId,
         X509Certificate2 certificate,
+        X509Certificate2? rootCa = null,
         int port = 8883,
         CancellationToken ct = default)
     {
-        MqttTransport transport = await MqttTransport.ConnectAsync(host, port, certificate, ct);
+        MqttTransport transport = await MqttTransport.ConnectAsync(host, port, certificate, rootCa, ct);
         try
         {
             await transport.WriteAsync(MqttCodec.Connect(clientId, KeepAliveSeconds), ct);
-            int code = MqttCodec.ConnAckReturnCode(await transport.ReadAsync(ct));
+            Packet connAck;
+            try
+            {
+                connAck = await transport.ReadAsync(ct);
+            }
+            catch (EndOfStreamException ex)
+            {
+                // AWS closes the connection instead of sending a CONNACK error.
+                throw new IOException(
+                    "AWS closed the connection after CONNECT. Usually the certificate is not active, has no policy " +
+                    $"attached, or the policy does not allow iot:Connect for client ID '{clientId}'.",
+                    ex);
+            }
+
+            int code = MqttCodec.ConnAckReturnCode(connAck);
             if (code != 0)
             {
                 throw new IOException($"AWS refused the connection, CONNACK code {code}.");
@@ -76,6 +95,10 @@ public sealed class SimpleMqttClient : IAsyncDisposable
         using X509Certificate2 pem = X509Certificate2.CreateFromPemFile(certificatePemPath, privateKeyPemPath);
         return X509CertificateLoader.LoadPkcs12(pem.Export(X509ContentType.Pkcs12), password: null);
     }
+
+    /// <summary>Loads a CA certificate from a PEM file, such as <c>AmazonRootCA1.pem</c>.</summary>
+    public static X509Certificate2 LoadRootCa(string pemPath) =>
+        X509Certificate2.CreateFromPem(File.ReadAllText(pemPath));
 
     /// <summary>Publishes a UTF-8 string.</summary>
     public Task PublishAsync(string topic, string payload, int qos = 0, CancellationToken ct = default) =>

@@ -18,8 +18,13 @@ internal sealed class MqttTransport : IAsyncDisposable
 
     private MqttTransport(SslStream stream) => _stream = stream;
 
-    /// <summary>Opens TCP and completes the TLS handshake with the device certificate.</summary>
-    public static async Task<MqttTransport> ConnectAsync(string host, int port, X509Certificate2 certificate, CancellationToken ct)
+    /// <summary>
+    /// Opens TCP and completes the TLS handshake with the device certificate. With
+    /// <paramref name="rootCa"/> the server is trusted only if its chain ends at that CA;
+    /// without it the operating system's trust store is used.
+    /// </summary>
+    public static async Task<MqttTransport> ConnectAsync(
+        string host, int port, X509Certificate2 certificate, X509Certificate2? rootCa, CancellationToken ct)
     {
         var tcp = new TcpClient { NoDelay = true };
         SslStream? stream = null;
@@ -33,6 +38,12 @@ internal sealed class MqttTransport : IAsyncDisposable
                     TargetHost = host,
                     ClientCertificates = [certificate],
                     EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+                    CertificateChainPolicy = rootCa is null ? null : new X509ChainPolicy
+                    {
+                        TrustMode = X509ChainTrustMode.CustomRootTrust,
+                        CustomTrustStore = { rootCa },
+                        RevocationMode = X509RevocationMode.NoCheck,
+                    },
                 },
                 ct);
             return new MqttTransport(stream);
