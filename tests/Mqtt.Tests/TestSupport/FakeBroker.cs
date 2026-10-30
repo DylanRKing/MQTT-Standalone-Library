@@ -46,7 +46,7 @@ internal sealed class BrokerSession(ServerConnection connection) : IAsyncDisposa
             return null;
         }
 
-        DecodeError error = MqttDecoder.TryDecode(frame, ProtocolVersion.V311, out IMqttPacket? packet);
+        DecodeError error = new MqttDecoder().TryDecode(frame, ProtocolVersion.V311, out IMqttPacket? packet);
         Assert.Equal(DecodeError.None, error);
         return packet;
     }
@@ -63,8 +63,8 @@ internal sealed class BrokerSession(ServerConnection connection) : IAsyncDisposa
 
     public Task SendAsync(IMqttPacket packet)
     {
-        var buffer = new byte[MqttEncoder.GetSize(packet, ProtocolVersion.V311)];
-        MqttEncoder.Write(buffer, packet, ProtocolVersion.V311);
+        var buffer = new byte[new MqttEncoder().GetSize(packet, ProtocolVersion.V311)];
+        new MqttEncoder().Write(buffer, packet, ProtocolVersion.V311);
         return connection.WriteAsync(buffer);
     }
 

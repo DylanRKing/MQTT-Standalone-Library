@@ -16,8 +16,6 @@ internal sealed record InboundPublish(PublishPacket Packet, Connection Connectio
 /// </summary>
 internal sealed class InboundDispatcher
 {
-    public const int DefaultCapacity = 1_000;
-
     private readonly Channel<InboundPublish> _messages;
     private readonly Channel<ConnectionStateChange> _stateChanges = Channel.CreateUnbounded<ConnectionStateChange>(new() { SingleReader = true });
     private readonly Func<InboundPublish, Task> _handleMessage;
@@ -30,7 +28,7 @@ internal sealed class InboundDispatcher
         Func<InboundPublish, Task> handleMessage,
         Func<ConnectionStateChange, Task> handleStateChange,
         SafeLogger log,
-        int capacity = DefaultCapacity)
+        int capacity = 1_000)
     {
         _handleMessage = handleMessage;
         _handleStateChange = handleStateChange;
@@ -75,7 +73,7 @@ internal sealed class InboundDispatcher
     }
 
     /// <summary>Awaits each subscriber in turn; an exception is logged and does not stop the others.</summary>
-    public static async Task InvokeAsync<T>(Func<T, Task>? handlers, T argument, SafeLogger log, string eventName)
+    public async Task InvokeAsync<T>(Func<T, Task>? handlers, T argument, SafeLogger log, string eventName)
     {
         if (handlers is null)
         {

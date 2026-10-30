@@ -9,11 +9,9 @@ namespace Mqtt.Internal.Core;
 /// DUP = 1 are checked. Payloads that must be counted exactly should carry their own message ID.
 /// Thread-safe.
 /// </summary>
-internal sealed class DuplicateCache(TimeProvider time, int capacity = DuplicateCache.DefaultCapacity)
+internal sealed class DuplicateCache(TimeProvider time, int capacity = 1_000)
 {
-    public const int DefaultCapacity = 1_000;
-
-    public static readonly TimeSpan Lifetime = TimeSpan.FromHours(1);
+    private readonly TimeSpan _lifetime = TimeSpan.FromHours(1);
 
     // Oldest first; the dictionary points into the list so a repeat moves to the back.
     private readonly LinkedList<(Key Key, long Timestamp)> _order = new();
@@ -41,13 +39,13 @@ internal sealed class DuplicateCache(TimeProvider time, int capacity = Duplicate
 
         lock (_lock)
         {
-            return _entries.TryGetValue(Key.For(packet), out var node) && time.GetElapsedTime(node.Value.Timestamp) < Lifetime;
+            return _entries.TryGetValue(KeyFor(packet), out var node) && time.GetElapsedTime(node.Value.Timestamp) < _lifetime;
         }
     }
 
     public void Record(PublishPacket packet)
     {
-        var key = Key.For(packet);
+        var key = KeyFor(packet);
         lock (_lock)
         {
             if (_entries.Remove(key, out var existing))
@@ -57,7 +55,7 @@ internal sealed class DuplicateCache(TimeProvider time, int capacity = Duplicate
 
             _entries[key] = _order.AddLast((key, time.GetTimestamp()));
             while (_order.First is { } oldest
-                && (_entries.Count > capacity || time.GetElapsedTime(oldest.Value.Timestamp) >= Lifetime))
+                && (_entries.Count > capacity || time.GetElapsedTime(oldest.Value.Timestamp) >= _lifetime))
             {
                 _order.RemoveFirst();
                 _entries.Remove(oldest.Value.Key);
@@ -74,13 +72,12 @@ internal sealed class DuplicateCache(TimeProvider time, int capacity = Duplicate
         }
     }
 
-    private readonly record struct Key(ushort PacketId, string Topic, int PayloadLength, int PayloadHash)
+    private Key KeyFor(PublishPacket packet)
     {
-        public static Key For(PublishPacket packet)
-        {
-            var hash = new HashCode();
-            hash.AddBytes(packet.Payload.Span);
-            return new Key(packet.PacketId, packet.Topic, packet.Payload.Length, hash.ToHashCode());
-        }
+        var hash = new HashCode();
+        hash.AddBytes(packet.Payload.Span);
+        return new Key(packet.PacketId, packet.Topic, packet.Payload.Length, hash.ToHashCode());
     }
+
+    private readonly record struct Key(ushort PacketId, string Topic, int PayloadLength, int PayloadHash);
 }

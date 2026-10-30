@@ -16,7 +16,7 @@ public class TopicValidatorTests
     [InlineData("a+b", false)]
     public void TopicName(string topic, bool valid)
     {
-        Assert.Equal(valid, TopicValidator.IsValidTopicName(topic));
+        Assert.Equal(valid, new TopicValidator().IsValidTopicName(topic));
     }
 
     [Theory]
@@ -37,6 +37,6 @@ public class TopicValidatorTests
     [InlineData("a/b+/c", false)]
     public void TopicFilter(string filter, bool valid)
     {
-        Assert.Equal(valid, TopicValidator.IsValidTopicFilter(filter));
+        Assert.Equal(valid, new TopicValidator().IsValidTopicFilter(filter));
     }
 }

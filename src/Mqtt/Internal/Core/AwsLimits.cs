@@ -7,17 +7,22 @@ namespace Mqtt.Internal.Core;
 /// AWS IoT Core quotas checked before anything is sent, so violations fail fast with
 /// <see cref="ArgumentException"/> instead of AWS silently dropping the packet or the connection.
 /// </summary>
-internal static class AwsLimits
+internal sealed class AwsLimits
 {
-    public const int MaxPayloadBytes = 128 * 1024;
-    public const int MaxTopicBytes = 256;
-    public const int MaxTopicSlashes = 7;
-    public const int MaxFiltersPerSubscribe = 8;
+    private readonly TopicValidator _topics = new();
 
-    public static void ValidateTopic(string topic, string paramName)
+    public int MaxPayloadBytes => 128 * 1024;
+
+    public int MaxTopicBytes => 256;
+
+    public int MaxTopicSlashes => 7;
+
+    public int MaxFiltersPerSubscribe => 8;
+
+    public void ValidateTopic(string topic, string paramName)
     {
         ArgumentNullException.ThrowIfNull(topic, paramName);
-        if (!TopicValidator.IsValidTopicName(topic))
+        if (!_topics.IsValidTopicName(topic))
         {
             throw new ArgumentException("Topic must be non-empty and contain no + or # wildcards.", paramName);
         }
@@ -25,11 +30,11 @@ internal static class AwsLimits
         ValidateSize(topic, "Topic", paramName);
     }
 
-    public static void ValidateFilter(TopicFilter filter, string paramName)
+    public void ValidateFilter(TopicFilter filter, string paramName)
     {
         ArgumentNullException.ThrowIfNull(filter, paramName);
         ArgumentNullException.ThrowIfNull(filter.Filter, paramName);
-        if (!TopicValidator.IsValidTopicFilter(filter.Filter))
+        if (!_topics.IsValidTopicFilter(filter.Filter))
         {
             throw new ArgumentException($"Invalid topic filter '{filter.Filter}': + must fill a whole level and # must be the whole last level.", paramName);
         }
@@ -38,7 +43,7 @@ internal static class AwsLimits
         ValidateQos(filter.Qos, paramName);
     }
 
-    public static void ValidatePayload(ReadOnlyMemory<byte> payload, string paramName)
+    public void ValidatePayload(ReadOnlyMemory<byte> payload, string paramName)
     {
         if (payload.Length > MaxPayloadBytes)
         {
@@ -46,7 +51,7 @@ internal static class AwsLimits
         }
     }
 
-    public static void ValidateQos(MqttQos qos, string paramName)
+    public void ValidateQos(MqttQos qos, string paramName)
     {
         if (qos is not (MqttQos.AtMostOnce or MqttQos.AtLeastOnce))
         {
@@ -54,7 +59,7 @@ internal static class AwsLimits
         }
     }
 
-    private static void ValidateSize(string value, string what, string paramName)
+    private void ValidateSize(string value, string what, string paramName)
     {
         if (value.Contains('\0'))
         {

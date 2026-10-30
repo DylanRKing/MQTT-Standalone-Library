@@ -28,11 +28,14 @@ internal sealed class PendingSubscribe(SubscribePacket packet, long sentTimestam
 /// </remarks>
 internal sealed class ClientSession : IAsyncDisposable
 {
-    private static readonly TimeSpan DisconnectSendTimeout = TimeSpan.FromSeconds(5);
+    private readonly TimeSpan _disconnectSendTimeout = TimeSpan.FromSeconds(5);
 
     // Connections dropped sooner than this after CONNACK count towards the duplicate client ID warning.
-    private static readonly TimeSpan ShortLivedConnection = TimeSpan.FromSeconds(5);
+    private readonly TimeSpan _shortLivedConnection = TimeSpan.FromSeconds(5);
 
+    private readonly MqttEncoder _encoder = new();
+    private readonly MqttDecoder _decoder = new();
+    private readonly AwsLimits _limits = new();
     private readonly MqttClientOptions _options;
     private readonly TransportOptions _transportOptions;
     private readonly SafeLogger _log;
@@ -127,7 +130,7 @@ internal sealed class ClientSession : IAsyncDisposable
 
             _acceptingQos1 = true;
             SetState(MqttConnectionState.Connecting, null);
-            var connection = new Connection(_time);
+            var connection = new Connection(_time, _encoder);
             ConnAckPacket connAck;
             try
             {
@@ -150,9 +153,9 @@ internal sealed class ClientSession : IAsyncDisposable
 
     public async Task<PublishResult> PublishAsync(string topic, ReadOnlyMemory<byte> payload, MqttQos qos, bool retain, CancellationToken ct)
     {
-        AwsLimits.ValidateTopic(topic, nameof(topic));
-        AwsLimits.ValidatePayload(payload, nameof(payload));
-        AwsLimits.ValidateQos(qos, nameof(qos));
+        _limits.ValidateTopic(topic, nameof(topic));
+        _limits.ValidatePayload(payload, nameof(payload));
+        _limits.ValidateQos(qos, nameof(qos));
         ThrowIfDisposed();
 
         if (qos == MqttQos.AtMostOnce)
@@ -222,7 +225,7 @@ internal sealed class ClientSession : IAsyncDisposable
 
         foreach (TopicFilter filter in filters)
         {
-            AwsLimits.ValidateFilter(filter, nameof(filters));
+            _limits.ValidateFilter(filter, nameof(filters));
         }
 
         ThrowIfDisposed();
@@ -310,11 +313,12 @@ internal sealed class ClientSession : IAsyncDisposable
         ConnAckPacket connAck;
         try
         {
-            connection.Transport = await MqttTransport.ConnectAsync(
+            var transport = new MqttTransport(
                 _transportOptions,
                 frame => OnFrameAsync(connection, frame),
-                reason => _ = HandleConnectionLostAsync(connection, reason),
-                linked.Token).ConfigureAwait(false);
+                reason => _ = HandleConnectionLostAsync(connection, reason));
+            await transport.ConnectAsync(linked.Token).ConfigureAwait(false);
+            connection.Transport = transport;
 
             var connect = new ConnectPacket(_options.ClientId, _options.CleanSession, (ushort)_options.EffectiveKeepAlive.TotalSeconds);
             await connection.SendAsync(connect, linked.Token).ConfigureAwait(false);
@@ -491,7 +495,7 @@ internal sealed class ClientSession : IAsyncDisposable
     {
         // AWS accepts at most 8 filters per SUBSCRIBE.
         var pending = new List<PendingSubscribe>();
-        foreach (TopicFilter[] batch in filters.Chunk(AwsLimits.MaxFiltersPerSubscribe))
+        foreach (TopicFilter[] batch in filters.Chunk(_limits.MaxFiltersPerSubscribe))
         {
             var entry = new PendingSubscribe(new SubscribePacket(_packetIds.Allocate(), batch), _time.GetTimestamp());
             lock (_subscribeLock)
@@ -550,7 +554,7 @@ internal sealed class ClientSession : IAsyncDisposable
         // Any packet from the broker answers an outstanding PINGREQ.
         connection.PingSentTimestamp = 0;
 
-        DecodeError error = MqttDecoder.TryDecode(frame.Span, ProtocolVersion.V311, out IMqttPacket? packet);
+        DecodeError error = _decoder.TryDecode(frame.Span, ProtocolVersion.V311, out IMqttPacket? packet);
         if (error != DecodeError.None)
         {
             throw new InvalidDataException($"Received a packet the client cannot accept ({error}).");
@@ -646,7 +650,7 @@ internal sealed class ClientSession : IAsyncDisposable
         if (item.Deliver && Volatile.Read(ref _disposed) == 0)
         {
             var message = new MqttMessage(packet.Topic, packet.Payload, packet.Qos, packet.Retain);
-            await InboundDispatcher.InvokeAsync(MessageReceived, message, _log, nameof(MessageReceived)).ConfigureAwait(false);
+            await _dispatcher.InvokeAsync(MessageReceived, message, _log, nameof(MessageReceived)).ConfigureAwait(false);
         }
 
         // PUBACK only after the handler: a crash before handling means AWS redelivers. Sent even
@@ -665,7 +669,7 @@ internal sealed class ClientSession : IAsyncDisposable
     }
 
     private Task HandleStateChangeAsync(ConnectionStateChange change) =>
-        InboundDispatcher.InvokeAsync(ConnectionStateChanged, change, _log, nameof(ConnectionStateChanged));
+        _dispatcher.InvokeAsync(ConnectionStateChanged, change, _log, nameof(ConnectionStateChanged));
 
     /// <summary>Transport closed, keep-alive expired or an ack is overdue.</summary>
     private async Task HandleConnectionLostAsync(Connection connection, Exception reason)
@@ -719,7 +723,7 @@ internal sealed class ClientSession : IAsyncDisposable
                 try
                 {
                     ct.ThrowIfCancellationRequested();
-                    var connection = new Connection(_time);
+                    var connection = new Connection(_time, _encoder);
                     ConnAckPacket connAck;
                     try
                     {
@@ -777,7 +781,7 @@ internal sealed class ClientSession : IAsyncDisposable
             {
                 try
                 {
-                    await connection.SendAsync(DisconnectPacket.Instance).WaitAsync(DisconnectSendTimeout, _time).ConfigureAwait(false);
+                    await connection.SendAsync(new DisconnectPacket()).WaitAsync(_disconnectSendTimeout, _time).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
@@ -857,7 +861,7 @@ internal sealed class ClientSession : IAsyncDisposable
     /// CONNACK refusals other than "server unavailable" and TLS authentication failures cannot be
     /// fixed by retrying.
     /// </summary>
-    private static bool IsRetryable(Exception ex) => ex switch
+    private bool IsRetryable(Exception ex) => ex switch
     {
         MqttConnectException { ReasonCode: { } code } => code == ReasonCode.ServerUnavailable,
         MqttConnectException { InnerException: AuthenticationException } => false,
@@ -867,7 +871,7 @@ internal sealed class ClientSession : IAsyncDisposable
     /// <summary>AWS drops the older connection when a client ID connects twice; two processes sharing an ID flap.</summary>
     private void WarnIfDuplicateClientId(TimeSpan uptime)
     {
-        if (uptime >= ShortLivedConnection)
+        if (uptime >= _shortLivedConnection)
         {
             _shortLivedConnections = 0;
             return;

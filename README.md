@@ -9,6 +9,10 @@ A self-contained .NET 10 MQTT 3.1.1 client for AWS IoT Core (QoS 0/1, TLS mutual
 | `src/Mqtt` | Library. Public API at the root; `Internal/Codec`, `Internal/Transport`, `Internal/Core` are internal. |
 | `tests/Mqtt.Tests` | xUnit tests: codec golden vectors, frame reader, transport and client end to end against a scripted fake TLS broker. |
 
+Neither library declares `static` members or `const` fields: helpers such as the encoder,
+decoder and AWS limit checks are classes that their owner creates, and limits are instance
+properties. Framework statics (`TimeSpan.FromSeconds`, `ArrayPool<byte>.Shared`) are still used.
+
 ## Status
 
 Following the build order in the design plan:

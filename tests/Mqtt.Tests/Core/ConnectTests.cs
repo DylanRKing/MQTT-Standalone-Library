@@ -87,7 +87,7 @@ public class ConnectTests : ClientTestBase
         {
             BrokerSession session = await AcceptAsync();
             await session.ReceiveAsync<ConnectPacket>();
-            await session.SendAsync(PingRespPacket.Instance);
+            await session.SendAsync(new PingRespPacket());
         });
 
         var ex = await Assert.ThrowsAsync<MqttConnectException>(() => client.ConnectAsync());
@@ -137,7 +137,7 @@ public class ConnectTests : ClientTestBase
     [Fact]
     public async Task BrokerDropsConnection_WithoutReconnect_GoesDisconnectedWithReason()
     {
-        var (client, broker) = await ConnectAsync(Broker.Options() with { Reconnect = ReconnectOptions.Disabled });
+        var (client, broker) = await ConnectAsync(Broker.Options() with { Reconnect = new ReconnectOptions { Enabled = false } });
         var states = new StateRecorder(client);
 
         await broker.DisposeAsync();

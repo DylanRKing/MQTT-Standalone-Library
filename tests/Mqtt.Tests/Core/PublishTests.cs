@@ -80,7 +80,7 @@ public class PublishTests : ClientTestBase
     [Fact]
     public async Task Qos1_ConnectionLost_WithoutReconnect_FailsPendingPublish()
     {
-        var (client, broker) = await ConnectAsync(Broker.Options() with { Reconnect = ReconnectOptions.Disabled });
+        var (client, broker) = await ConnectAsync(Broker.Options() with { Reconnect = new ReconnectOptions { Enabled = false } });
 
         Task<PublishResult> publishing = client.PublishAsync("t", default, MqttQos.AtLeastOnce);
         await broker.ReceiveAsync<PublishPacket>();

@@ -16,17 +16,17 @@ internal enum FrameStatus
 /// Parses the fixed header (type/flags byte plus variable-length remaining length).
 /// Used by the decoder and by the transport to find frame boundaries in a byte stream.
 /// </summary>
-internal static class FixedHeader
+internal sealed class FixedHeader
 {
     /// <summary>Largest fixed header: one type byte plus four remaining-length bytes.</summary>
-    public const int MaxSize = 5;
+    public int MaxSize => 5;
 
     /// <summary>
     /// Tries to parse a fixed header at the start of <paramref name="buffer"/>.
     /// On <see cref="FrameStatus.Complete"/> the whole frame is
     /// <paramref name="headerLength"/> + <paramref name="remainingLength"/> bytes.
     /// </summary>
-    public static FrameStatus TryRead(ReadOnlySpan<byte> buffer, out byte typeAndFlags, out int remainingLength, out int headerLength)
+    public FrameStatus TryRead(ReadOnlySpan<byte> buffer, out byte typeAndFlags, out int remainingLength, out int headerLength)
     {
         typeAndFlags = 0;
         remainingLength = 0;

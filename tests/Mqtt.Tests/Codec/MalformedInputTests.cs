@@ -68,7 +68,7 @@ public class MalformedInputTests
     [Fact]
     public void FailedDecode_LeavesPacketNull()
     {
-        MqttDecoder.TryDecode(Hex("40 02 0000"), ProtocolVersion.V311, out var packet);
+        new MqttDecoder().TryDecode(Hex("40 02 0000"), ProtocolVersion.V311, out var packet);
 
         Assert.Null(packet);
     }

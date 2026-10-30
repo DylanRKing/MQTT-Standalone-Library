@@ -8,7 +8,7 @@ namespace Mqtt.Internal.Core;
 /// </summary>
 internal sealed class ReconnectBackoff(ReconnectOptions options, TimeSpan floor, Random random)
 {
-    public static readonly TimeSpan StableAfter = TimeSpan.FromSeconds(30);
+    public TimeSpan StableAfter { get; } = TimeSpan.FromSeconds(30);
 
     private int _attempt;
 

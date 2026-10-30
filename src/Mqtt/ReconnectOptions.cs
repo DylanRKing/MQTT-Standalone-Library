@@ -12,10 +12,10 @@ namespace Mqtt;
 /// </remarks>
 public sealed record ReconnectOptions
 {
-    /// <summary>Reconnect turned off: a lost connection goes straight to Disconnected.</summary>
-    public static ReconnectOptions Disabled { get; } = new() { Enabled = false };
-
-    /// <summary>Whether to reconnect automatically.</summary>
+    /// <summary>
+    /// Whether to reconnect automatically. Set <c>new ReconnectOptions { Enabled = false }</c> to
+    /// send a lost connection straight to Disconnected.
+    /// </summary>
     public bool Enabled { get; init; } = true;
 
     /// <summary>Base delay that doubles with each failed attempt.</summary>

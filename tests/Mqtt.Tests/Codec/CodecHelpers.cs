@@ -7,8 +7,8 @@ internal static class CodecHelpers
 {
     public static byte[] Encode(IMqttPacket packet)
     {
-        var buffer = new byte[MqttEncoder.GetSize(packet, ProtocolVersion.V311)];
-        int written = MqttEncoder.Write(buffer, packet, ProtocolVersion.V311);
+        var buffer = new byte[new MqttEncoder().GetSize(packet, ProtocolVersion.V311)];
+        int written = new MqttEncoder().Write(buffer, packet, ProtocolVersion.V311);
         Assert.Equal(buffer.Length, written);
         return buffer;
     }
@@ -16,13 +16,13 @@ internal static class CodecHelpers
     public static T Decode<T>(byte[] frame)
         where T : IMqttPacket
     {
-        DecodeError error = MqttDecoder.TryDecode(frame, ProtocolVersion.V311, out IMqttPacket? packet);
+        DecodeError error = new MqttDecoder().TryDecode(frame, ProtocolVersion.V311, out IMqttPacket? packet);
         Assert.Equal(DecodeError.None, error);
         return Assert.IsType<T>(packet);
     }
 
     public static DecodeError DecodeErrorOf(string hex) =>
-        MqttDecoder.TryDecode(Convert.FromHexString(hex.Replace(" ", "")), ProtocolVersion.V311, out _);
+        new MqttDecoder().TryDecode(Convert.FromHexString(hex.Replace(" ", "")), ProtocolVersion.V311, out _);
 
     public static byte[] Hex(string hex) => Convert.FromHexString(hex.Replace(" ", ""));
 }

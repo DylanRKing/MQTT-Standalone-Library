@@ -71,7 +71,7 @@ public sealed class MqttTransportTests : IDisposable
             Encode(new ConnAckPacket(false, ReasonCode.Success)),
             Encode(new PublishPacket("a/b", "hello"u8.ToArray(), MqttQos.AtLeastOnce, PacketId: 7)),
             Encode(new SubAckPacket(1, [ReasonCode.GrantedQos1])),
-            Encode(PingRespPacket.Instance),
+            Encode(new PingRespPacket()),
         ];
 
         // First two frames one byte per TLS record, the last two in a single write.
@@ -140,7 +140,7 @@ public sealed class MqttTransportTests : IDisposable
         await using var _ = transport;
         await using var __ = connection;
 
-        await connection.WriteAsync(Encode(PingRespPacket.Instance));
+        await connection.WriteAsync(Encode(new PingRespPacket()));
 
         Exception reason = await _closed.Task.WaitAsync(Timeout);
         Assert.IsType<InvalidDataException>(reason.InnerException);
@@ -156,7 +156,7 @@ public sealed class MqttTransportTests : IDisposable
 
         Exception reason = await _closed.Task.WaitAsync(Timeout);
         Assert.IsType<MqttConnectionLostException>(reason);
-        await Assert.ThrowsAsync<MqttConnectionLostException>(() => SendAsync(transport, PingReqPacket.Instance));
+        await Assert.ThrowsAsync<MqttConnectionLostException>(() => SendAsync(transport, new PingReqPacket()));
         await transport.CloseAsync();
         Assert.Equal(1, _closedCount);
     }
@@ -167,13 +167,13 @@ public sealed class MqttTransportTests : IDisposable
         var (transport, connection) = await ConnectAsync(Options());
         await using var __ = connection;
 
-        await SendAsync(transport, DisconnectPacket.Instance);
+        await SendAsync(transport, new DisconnectPacket());
         await transport.CloseAsync();
         await transport.CloseAsync();
 
         Assert.Equal(Hex("E0 00"), await connection.ReadFrameAsync().WaitAsync(Timeout));
         Assert.Null(await connection.ReadFrameAsync().WaitAsync(Timeout));
-        await Assert.ThrowsAsync<MqttConnectionLostException>(() => SendAsync(transport, PingReqPacket.Instance));
+        await Assert.ThrowsAsync<MqttConnectionLostException>(() => SendAsync(transport, new PingReqPacket()));
         Assert.Equal(0, _closedCount);
     }
 
@@ -182,7 +182,7 @@ public sealed class MqttTransportTests : IDisposable
     {
         Task accept = _server.AcceptAsync();
 
-        await Assert.ThrowsAsync<AuthenticationException>(() => MqttTransport.ConnectAsync(
+        await Assert.ThrowsAsync<AuthenticationException>(() => OpenTransportAsync(
             Options() with { ServerCertificateValidator = (_, _, _, _) => false },
             OnFrame,
             OnClosed,
@@ -199,7 +199,7 @@ public sealed class MqttTransportTests : IDisposable
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            MqttTransport.ConnectAsync(Options(), OnFrame, OnClosed, cts.Token));
+            OpenTransportAsync(Options(), OnFrame, OnClosed, cts.Token));
 
         (await accept).Dispose();
     }
@@ -213,7 +213,32 @@ public sealed class MqttTransportTests : IDisposable
         listener.Stop();
 
         await Assert.ThrowsAsync<SocketException>(() =>
-            MqttTransport.ConnectAsync(Options() with { Port = port }, OnFrame, OnClosed, CancellationToken.None));
+            OpenTransportAsync(Options() with { Port = port }, OnFrame, OnClosed, CancellationToken.None));
+
+        // A failed connect throws; it never reports through the closed callback.
+        Assert.Equal(0, Volatile.Read(ref _closedCount));
+    }
+
+    [Fact]
+    public async Task ConnectAsync_Twice_Throws()
+    {
+        var (transport, connection) = await ConnectAsync(Options());
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => transport.ConnectAsync(CancellationToken.None));
+
+        await transport.CloseAsync();
+        await connection.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task ConnectAsync_AfterFailedConnect_Throws()
+    {
+        var transport = new MqttTransport(Options() with { Port = 1 }, OnFrame, OnClosed);
+        await Assert.ThrowsAnyAsync<Exception>(() => transport.ConnectAsync(CancellationToken.None));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => transport.ConnectAsync(CancellationToken.None));
+        Assert.True(transport.IsClosed);
+        await transport.CloseAsync();
     }
 
     [Fact]
@@ -222,7 +247,7 @@ public sealed class MqttTransportTests : IDisposable
         var options = Options() with { CertificateProvider = new TestCertificateProvider(TestCertificates.ClientWithoutKey) };
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            MqttTransport.ConnectAsync(options, OnFrame, OnClosed, CancellationToken.None));
+            OpenTransportAsync(options, OnFrame, OnClosed, CancellationToken.None));
     }
 
     [Fact]
@@ -255,9 +280,20 @@ public sealed class MqttTransportTests : IDisposable
         FrameHandler? onFrame = null)
     {
         Task<ServerConnection> accept = _server.AcceptAsync();
-        MqttTransport transport = await MqttTransport.ConnectAsync(options, onFrame ?? OnFrame, OnClosed, CancellationToken.None)
+        MqttTransport transport = await OpenTransportAsync(options, onFrame ?? OnFrame, OnClosed, CancellationToken.None)
             .WaitAsync(Timeout);
         return (transport, await accept.WaitAsync(Timeout));
+    }
+
+    private async Task<MqttTransport> OpenTransportAsync(
+        TransportOptions options,
+        FrameHandler onFrame,
+        Action<Exception> onClosed,
+        CancellationToken ct)
+    {
+        var transport = new MqttTransport(options, onFrame, onClosed);
+        await transport.ConnectAsync(ct);
+        return transport;
     }
 
     private ValueTask OnFrame(ReadOnlyMemory<byte> frame) => _received.Writer.WriteAsync(frame.ToArray());
@@ -270,9 +306,9 @@ public sealed class MqttTransportTests : IDisposable
 
     private static Task SendAsync(MqttTransport transport, IMqttPacket packet)
     {
-        int size = MqttEncoder.GetSize(packet, ProtocolVersion.V311);
+        int size = new MqttEncoder().GetSize(packet, ProtocolVersion.V311);
         byte[] buffer = ArrayPool<byte>.Shared.Rent(size);
-        MqttEncoder.Write(buffer, packet, ProtocolVersion.V311);
+        new MqttEncoder().Write(buffer, packet, ProtocolVersion.V311);
         return transport.SendAsync(buffer, size);
     }
 }

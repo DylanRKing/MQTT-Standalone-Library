@@ -16,11 +16,11 @@ internal sealed class KeepAliveMonitor(
     Action<Connection, Exception> onDead,
     SafeLogger log)
 {
-    public static readonly TimeSpan TickInterval = TimeSpan.FromSeconds(1);
+    private readonly TimeSpan _tickInterval = TimeSpan.FromSeconds(1);
 
     public async Task RunAsync()
     {
-        using var timer = new PeriodicTimer(TickInterval, time);
+        using var timer = new PeriodicTimer(_tickInterval, time);
         try
         {
             while (await timer.WaitForNextTickAsync(connection.Lifetime.Token).ConfigureAwait(false))
@@ -68,7 +68,7 @@ internal sealed class KeepAliveMonitor(
     {
         try
         {
-            await connection.SendAsync(PingReqPacket.Instance).ConfigureAwait(false);
+            await connection.SendAsync(new PingReqPacket()).ConfigureAwait(false);
             log.Log(MqttLogLevel.Trace, "Sent PINGREQ.");
         }
         catch (Exception ex)

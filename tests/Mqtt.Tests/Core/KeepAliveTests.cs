@@ -21,7 +21,7 @@ public class KeepAliveTests : ClientTestBase
 
         _time.Advance(TimeSpan.FromSeconds(1));
         Assert.IsType<PingReqPacket>(await next);
-        await broker.SendAsync(PingRespPacket.Instance);
+        await broker.SendAsync(new PingRespPacket());
 
         // Frames are handled in order, so once this PUBACK arrives the PINGRESP has been processed.
         await broker.SendAsync(new PublishPacket("sync", default, MqttQos.AtLeastOnce, PacketId: 1));
@@ -72,7 +72,7 @@ public class KeepAliveTests : ClientTestBase
         {
             TimeProvider = _time,
             AckTimeout = TimeSpan.FromSeconds(30),
-            Reconnect = ReconnectOptions.Disabled,
+            Reconnect = new ReconnectOptions { Enabled = false },
         });
 
         Task<PublishResult> publishing = client.PublishAsync("t", default, MqttQos.AtLeastOnce);

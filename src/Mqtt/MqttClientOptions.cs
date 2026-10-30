@@ -9,16 +9,16 @@ namespace Mqtt;
 public sealed record MqttClientOptions
 {
     /// <summary>AWS IoT Core client ID limit, in UTF-8 bytes.</summary>
-    public const int MaxClientIdBytes = 128;
+    public int MaxClientIdBytes => 128;
 
     /// <summary>Lowest keep-alive AWS honours; shorter values are raised to this.</summary>
-    public static readonly TimeSpan MinKeepAlive = TimeSpan.FromSeconds(30);
+    public TimeSpan MinKeepAlive => TimeSpan.FromSeconds(30);
 
     /// <summary>Highest keep-alive AWS honours; longer values are lowered to this.</summary>
-    public static readonly TimeSpan MaxKeepAlive = TimeSpan.FromSeconds(1200);
+    public TimeSpan MaxKeepAlive => TimeSpan.FromSeconds(1200);
 
     /// <summary>AWS limit on unacknowledged QoS 1 messages per connection.</summary>
-    public const int MaxInFlightLimit = 100;
+    public int MaxInFlightLimit => 100;
 
     /// <summary>Broker host name, normally the account's AWS IoT ATS data endpoint.</summary>
     public required string Host { get; init; }
@@ -125,7 +125,7 @@ public sealed record MqttClientOptions
             throw new ArgumentOutOfRangeException(nameof(AckTimeout), AckTimeout, "AckTimeout must be positive.");
         }
 
-        if (MaxInFlight is < 1 or > MaxInFlightLimit)
+        if (MaxInFlight < 1 || MaxInFlight > MaxInFlightLimit)
         {
             throw new ArgumentOutOfRangeException(nameof(MaxInFlight), MaxInFlight, $"MaxInFlight must be 1–{MaxInFlightLimit}.");
         }
@@ -147,7 +147,7 @@ public sealed record MqttClientOptions
 
         if (Reconnect is null)
         {
-            throw new ArgumentException("Reconnect is required; use ReconnectOptions.Disabled to turn it off.", nameof(Reconnect));
+            throw new ArgumentException("Reconnect is required; set Enabled = false to turn it off.", nameof(Reconnect));
         }
 
         if (Reconnect.InitialDelay <= TimeSpan.Zero || Reconnect.MaxDelay < Reconnect.InitialDelay)

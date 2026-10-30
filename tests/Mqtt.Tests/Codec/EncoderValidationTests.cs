@@ -35,7 +35,7 @@ public class EncoderValidationTests
     [MemberData(nameof(InvalidPackets))]
     public void InvalidPacket_Throws(object packet)
     {
-        Assert.ThrowsAny<ArgumentException>(() => MqttEncoder.GetSize((IMqttPacket)packet, ProtocolVersion.V311));
+        Assert.ThrowsAny<ArgumentException>(() => new MqttEncoder().GetSize((IMqttPacket)packet, ProtocolVersion.V311));
     }
 
     [Fact]
@@ -52,7 +52,7 @@ public class EncoderValidationTests
         var packet = new PubAckPacket(1);
         var buffer = new byte[3];
 
-        Assert.Throws<ArgumentException>(() => MqttEncoder.Write(buffer, packet, ProtocolVersion.V311));
+        Assert.Throws<ArgumentException>(() => new MqttEncoder().Write(buffer, packet, ProtocolVersion.V311));
     }
 
     [Fact]
@@ -60,7 +60,7 @@ public class EncoderValidationTests
     {
         var buffer = new byte[64];
 
-        int written = MqttEncoder.Write(buffer, new PubAckPacket(1), ProtocolVersion.V311);
+        int written = new MqttEncoder().Write(buffer, new PubAckPacket(1), ProtocolVersion.V311);
 
         Assert.Equal(4, written);
     }

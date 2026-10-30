@@ -125,7 +125,7 @@ internal sealed class AutoBroker : IAsyncDisposable
             session = new Session(connection);
             while (await connection.ReadFrameAsync(_stop.Token) is { } frame)
             {
-                if (MqttDecoder.TryDecode(frame, ProtocolVersion.V311, out IMqttPacket? packet) != DecodeError.None)
+                if (new MqttDecoder().TryDecode(frame, ProtocolVersion.V311, out IMqttPacket? packet) != DecodeError.None)
                 {
                     break;
                 }
@@ -164,7 +164,7 @@ internal sealed class AutoBroker : IAsyncDisposable
 
                         break;
                     case PingReqPacket:
-                        await session.SendAsync(PingRespPacket.Instance);
+                        await session.SendAsync(new PingRespPacket());
                         break;
                     case DisconnectPacket:
                         return;
@@ -218,8 +218,8 @@ internal sealed class AutoBroker : IAsyncDisposable
 
         public async Task SendAsync(IMqttPacket packet)
         {
-            var buffer = new byte[MqttEncoder.GetSize(packet, ProtocolVersion.V311)];
-            MqttEncoder.Write(buffer, packet, ProtocolVersion.V311);
+            var buffer = new byte[new MqttEncoder().GetSize(packet, ProtocolVersion.V311)];
+            new MqttEncoder().Write(buffer, packet, ProtocolVersion.V311);
             await _writeLock.WaitAsync();
             try
             {

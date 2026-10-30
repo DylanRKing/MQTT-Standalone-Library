@@ -145,13 +145,13 @@ public class PacketVectorTests
     [Fact]
     public void EmptyPackets()
     {
-        Assert.Equal(Hex("C0 00"), Encode(PingReqPacket.Instance));
-        Assert.Equal(Hex("D0 00"), Encode(PingRespPacket.Instance));
-        Assert.Equal(Hex("E0 00"), Encode(DisconnectPacket.Instance));
+        Assert.Equal(Hex("C0 00"), Encode(new PingReqPacket()));
+        Assert.Equal(Hex("D0 00"), Encode(new PingRespPacket()));
+        Assert.Equal(Hex("E0 00"), Encode(new DisconnectPacket()));
 
-        Assert.Same(PingReqPacket.Instance, Decode<PingReqPacket>(Hex("C0 00")));
-        Assert.Same(PingRespPacket.Instance, Decode<PingRespPacket>(Hex("D0 00")));
-        Assert.Same(DisconnectPacket.Instance, Decode<DisconnectPacket>(Hex("E0 00")));
+        Decode<PingReqPacket>(Hex("C0 00"));
+        Decode<PingRespPacket>(Hex("D0 00"));
+        Decode<DisconnectPacket>(Hex("E0 00"));
     }
 
     private static void AssertPublishEqual(PublishPacket expected, PublishPacket actual)

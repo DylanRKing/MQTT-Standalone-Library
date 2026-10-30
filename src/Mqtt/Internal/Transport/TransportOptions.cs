@@ -5,9 +5,6 @@ namespace Mqtt.Internal.Transport;
 /// <summary>Settings for one <see cref="MqttTransport"/> connection, built by the client core.</summary>
 internal sealed record TransportOptions
 {
-    /// <summary>AWS's 128 KB payload limit plus room for the fixed header, topic and packet ID.</summary>
-    public const int DefaultMaxFrameSize = (128 * 1024) + (4 * 1024);
-
     public required string Host { get; init; }
 
     public int Port { get; init; } = 8883;
@@ -19,8 +16,11 @@ internal sealed record TransportOptions
 
     public IMqttLogger? Logger { get; init; }
 
-    /// <summary>Largest inbound frame accepted; a larger one closes the connection.</summary>
-    public int MaxFrameSize { get; init; } = DefaultMaxFrameSize;
+    /// <summary>
+    /// Largest inbound frame accepted; a larger one closes the connection. Defaults to AWS's
+    /// 128 KB payload limit plus room for the fixed header, topic and packet ID.
+    /// </summary>
+    public int MaxFrameSize { get; init; } = (128 * 1024) + (4 * 1024);
 
     /// <summary>
     /// Overrides server certificate validation. Null uses the OS trust store, which covers the

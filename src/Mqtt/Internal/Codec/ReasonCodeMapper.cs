@@ -1,9 +1,9 @@
 namespace Mqtt.Internal.Codec;
 
 /// <summary>Maps 3.1.1 CONNACK return codes and SUBACK return codes to and from <see cref="ReasonCode"/>.</summary>
-internal static class ReasonCodeMapper
+internal sealed class ReasonCodeMapper
 {
-    public static bool TryFromConnAckV311(byte returnCode, out ReasonCode reasonCode)
+    public bool TryFromConnAckV311(byte returnCode, out ReasonCode reasonCode)
     {
         reasonCode = returnCode switch
         {
@@ -18,7 +18,7 @@ internal static class ReasonCodeMapper
         return returnCode <= 5;
     }
 
-    public static bool TryToConnAckV311(ReasonCode reasonCode, out byte returnCode)
+    public bool TryToConnAckV311(ReasonCode reasonCode, out byte returnCode)
     {
         returnCode = reasonCode switch
         {
@@ -34,6 +34,6 @@ internal static class ReasonCodeMapper
     }
 
     /// <summary>3.1.1 SUBACK codes share their numeric value with the reason code.</summary>
-    public static bool IsValidSubAckV311(ReasonCode reasonCode) => reasonCode is
+    public bool IsValidSubAckV311(ReasonCode reasonCode) => reasonCode is
         ReasonCode.Success or ReasonCode.GrantedQos1 or ReasonCode.GrantedQos2 or ReasonCode.UnspecifiedError;
 }

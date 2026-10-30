@@ -26,8 +26,7 @@ internal enum FrameReadStatus
 /// <remarks>Not thread-safe: owned by the transport's single read loop.</remarks>
 internal sealed class FrameReader : IDisposable
 {
-    public const int DefaultInitialSize = 4 * 1024;
-
+    private readonly FixedHeader _fixedHeader = new();
     private readonly int _initialSize;
     private readonly int _maxFrameSize;
     private byte[] _buffer;
@@ -37,10 +36,10 @@ internal sealed class FrameReader : IDisposable
     // Total size of the partial frame at _start, once its fixed header has been parsed.
     private int _pendingFrameSize;
 
-    public FrameReader(int maxFrameSize, int initialSize = DefaultInitialSize)
+    public FrameReader(int maxFrameSize, int initialSize = 4 * 1024)
     {
-        ArgumentOutOfRangeException.ThrowIfLessThan(initialSize, FixedHeader.MaxSize);
-        ArgumentOutOfRangeException.ThrowIfLessThan(maxFrameSize, FixedHeader.MaxSize);
+        ArgumentOutOfRangeException.ThrowIfLessThan(initialSize, _fixedHeader.MaxSize);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxFrameSize, _fixedHeader.MaxSize);
         _initialSize = Math.Min(initialSize, maxFrameSize);
         _maxFrameSize = maxFrameSize;
         _buffer = ArrayPool<byte>.Shared.Rent(_initialSize);
@@ -59,7 +58,7 @@ internal sealed class FrameReader : IDisposable
 
         // The buffer may have filled before TryRead saw a complete header; size the frame now.
         if (_pendingFrameSize == 0
-            && FixedHeader.TryRead(_buffer.AsSpan(_start, buffered), out _, out int remainingLength, out int headerLength) == FrameStatus.Complete)
+            && _fixedHeader.TryRead(_buffer.AsSpan(_start, buffered), out _, out int remainingLength, out int headerLength) == FrameStatus.Complete)
         {
             _pendingFrameSize = (int)Math.Min((long)headerLength + remainingLength, _maxFrameSize);
         }
@@ -106,7 +105,7 @@ internal sealed class FrameReader : IDisposable
     {
         frame = default;
         ReadOnlySpan<byte> buffered = _buffer.AsSpan(_start, _end - _start);
-        switch (FixedHeader.TryRead(buffered, out _, out int remainingLength, out int headerLength))
+        switch (_fixedHeader.TryRead(buffered, out _, out int remainingLength, out int headerLength))
         {
             case FrameStatus.Incomplete:
                 return FrameReadStatus.NeedMoreData;

@@ -4,16 +4,16 @@ namespace Mqtt.Internal.Codec;
 /// MQTT 3.1.1 topic name and filter syntax rules (section 4.7). Broker-specific limits such as
 /// AWS's 256-byte, 7-slash topics are checked by the client core, not here.
 /// </summary>
-internal static class TopicValidator
+internal sealed class TopicValidator
 {
     /// <summary>A topic name to publish to: non-empty and free of wildcards.</summary>
-    public static bool IsValidTopicName(string topic) =>
+    public bool IsValidTopicName(string topic) =>
         !string.IsNullOrEmpty(topic) && topic.AsSpan().IndexOfAny('+', '#') < 0;
 
     /// <summary>
     /// A subscription filter: non-empty, <c>+</c> only as a whole level, <c>#</c> only as the whole last level.
     /// </summary>
-    public static bool IsValidTopicFilter(string filter)
+    public bool IsValidTopicFilter(string filter)
     {
         if (string.IsNullOrEmpty(filter))
         {

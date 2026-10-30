@@ -68,7 +68,7 @@ internal sealed class ServerConnection(SslStream stream, X509Certificate? client
     /// <summary>Reads exactly one frame, or returns null at end of stream.</summary>
     public async Task<byte[]?> ReadFrameAsync(CancellationToken ct = default)
     {
-        var header = new List<byte>(FixedHeader.MaxSize);
+        var header = new List<byte>(new FixedHeader().MaxSize);
         var one = new byte[1];
         while (true)
         {
@@ -78,7 +78,7 @@ internal sealed class ServerConnection(SslStream stream, X509Certificate? client
             }
 
             header.Add(one[0]);
-            FrameStatus status = FixedHeader.TryRead(header.ToArray(), out _, out int remainingLength, out _);
+            FrameStatus status = new FixedHeader().TryRead(header.ToArray(), out _, out int remainingLength, out _);
             if (status == FrameStatus.Malformed)
             {
                 throw new InvalidDataException("Malformed fixed header from client.");

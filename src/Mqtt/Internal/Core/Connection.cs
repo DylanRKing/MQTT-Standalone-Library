@@ -10,7 +10,7 @@ namespace Mqtt.Internal.Core;
 /// timestamps. A reconnect creates a new instance, so callbacks from an old connection can be
 /// recognised and ignored.
 /// </summary>
-internal sealed class Connection(TimeProvider time)
+internal sealed class Connection(TimeProvider time, MqttEncoder encoder)
 {
     private long _lastSentTimestamp = time.GetTimestamp();
     private long _pingSentTimestamp;
@@ -41,11 +41,11 @@ internal sealed class Connection(TimeProvider time)
     public async Task SendAsync(IMqttPacket packet, CancellationToken ct = default)
     {
         MqttTransport transport = Transport ?? throw new MqttConnectionLostException("Not connected.");
-        int size = MqttEncoder.GetSize(packet, ProtocolVersion.V311);
+        int size = encoder.GetSize(packet, ProtocolVersion.V311);
         byte[] buffer = ArrayPool<byte>.Shared.Rent(size);
         try
         {
-            MqttEncoder.Write(buffer, packet, ProtocolVersion.V311);
+            encoder.Write(buffer, packet, ProtocolVersion.V311);
         }
         catch
         {

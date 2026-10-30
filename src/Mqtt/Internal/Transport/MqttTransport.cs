@@ -21,22 +21,33 @@ internal delegate ValueTask FrameHandler(ReadOnlyMemory<byte> frame);
 /// </summary>
 internal sealed class MqttTransport : IAsyncDisposable
 {
-    private readonly SslStream _stream;
+    private readonly TransportOptions _options;
     private readonly FrameHandler _onFrame;
     private readonly Action<Exception> _onClosed;
     private readonly SafeLogger _log;
     private readonly FrameReader _frameReader;
     private readonly Channel<OutboundFrame> _outbound;
     private readonly CancellationTokenSource _shutdown = new();
+    private SslStream? _stream;
     private Task _run = Task.CompletedTask;
 
     // Set once by the first Shutdown call; later calls are no-ops.
     private Exception? _closeReason;
     private bool _closedLocally;
 
-    private MqttTransport(SslStream stream, TransportOptions options, FrameHandler onFrame, Action<Exception> onClosed)
+    /// <summary>Creates an unconnected transport; call <see cref="ConnectAsync"/> once to open it.</summary>
+    /// <param name="options">Endpoint, certificate provider and limits.</param>
+    /// <param name="onFrame">Called from the read loop for each inbound frame, one at a time.</param>
+    /// <param name="onClosed">
+    /// Called once, after both loops have stopped, if the connection fails. Not called after
+    /// <see cref="CloseAsync"/> or when <see cref="ConnectAsync"/> itself fails.
+    /// </param>
+    public MqttTransport(TransportOptions options, FrameHandler onFrame, Action<Exception> onClosed)
     {
-        _stream = stream;
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(onFrame);
+        ArgumentNullException.ThrowIfNull(onClosed);
+        _options = options;
         _onFrame = onFrame;
         _onClosed = onClosed;
         _log = new SafeLogger(options.Logger, options.ClientId);
@@ -48,37 +59,50 @@ internal sealed class MqttTransport : IAsyncDisposable
         });
     }
 
+    // Set by ConnectAsync before the loops start.
+    private SslStream Stream => _stream ?? throw new InvalidOperationException("The transport is not connected.");
+
     /// <summary>TLS version negotiated with the broker.</summary>
-    public SslProtocols SslProtocol => _stream.SslProtocol;
+    public SslProtocols SslProtocol => _stream?.SslProtocol ?? SslProtocols.None;
 
     /// <summary>True once the connection has failed or been closed.</summary>
     public bool IsClosed => Volatile.Read(ref _closeReason) is not null;
 
     /// <summary>
     /// Opens TCP, completes the TLS handshake with the client certificate, and starts the read and
-    /// write loops. The caller bounds the time taken with <paramref name="ct"/>.
+    /// write loops. The caller bounds the time taken with <paramref name="ct"/>. Call once; after a
+    /// failure the transport is closed and a new one is needed.
     /// </summary>
-    /// <param name="options">Endpoint, certificate provider and limits.</param>
-    /// <param name="onFrame">Called from the read loop for each inbound frame, one at a time.</param>
-    /// <param name="onClosed">
-    /// Called once, after both loops have stopped, if the connection fails. Not called after
-    /// <see cref="CloseAsync"/>.
-    /// </param>
     /// <param name="ct">Cancels the TCP connect and TLS handshake.</param>
     /// <exception cref="AuthenticationException">The TLS handshake failed; retrying will not help.</exception>
     /// <exception cref="SocketException">The broker could not be reached.</exception>
     /// <exception cref="OperationCanceledException"><paramref name="ct"/> was cancelled.</exception>
-    public static async Task<MqttTransport> ConnectAsync(
-        TransportOptions options,
-        FrameHandler onFrame,
-        Action<Exception> onClosed,
-        CancellationToken ct)
+    /// <exception cref="InvalidOperationException">Called more than once.</exception>
+    public async Task ConnectAsync(CancellationToken ct)
     {
-        ArgumentNullException.ThrowIfNull(options);
-        ArgumentNullException.ThrowIfNull(onFrame);
-        ArgumentNullException.ThrowIfNull(onClosed);
-        var log = new SafeLogger(options.Logger, options.ClientId);
+        if (_stream is not null || IsClosed)
+        {
+            throw new InvalidOperationException("ConnectAsync can only be called once per transport.");
+        }
 
+        try
+        {
+            _stream = await OpenStreamAsync(_options, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // Nothing started: mark closed (without the closed callback) and release the buffers.
+            Shutdown(ex, locally: true);
+            _frameReader.Dispose();
+            _shutdown.Dispose();
+            throw;
+        }
+
+        _run = RunAsync();
+    }
+
+    private async Task<SslStream> OpenStreamAsync(TransportOptions options, CancellationToken ct)
+    {
         X509Certificate2 certificate = await options.CertificateProvider.GetClientCertificateAsync(ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException("The certificate provider returned null.");
         if (!certificate.HasPrivateKey)
@@ -114,16 +138,14 @@ internal sealed class MqttTransport : IAsyncDisposable
                 socket.Dispose();
             }
 
-            log.Log(MqttLogLevel.Warning, $"Connection to {options.Host}:{options.Port} failed: {ex.Message}", ex);
+            _log.Log(MqttLogLevel.Warning, $"Connection to {options.Host}:{options.Port} failed: {ex.Message}", ex);
             throw;
         }
 
-        var transport = new MqttTransport(stream, options, onFrame, onClosed);
-        transport._run = transport.RunAsync();
-        log.Log(
+        _log.Log(
             MqttLogLevel.Information,
             $"Connected to {options.Host}:{options.Port} with {stream.SslProtocol}, client certificate {certificate.Thumbprint}.");
-        return transport;
+        return stream;
     }
 
     /// <summary>
@@ -178,7 +200,7 @@ internal sealed class MqttTransport : IAsyncDisposable
 
         // Catch frames queued between the shutdown drain and the channel completing.
         DrainOutbound();
-        await _stream.DisposeAsync().ConfigureAwait(false);
+        await Stream.DisposeAsync().ConfigureAwait(false);
         _frameReader.Dispose();
         _shutdown.Dispose();
 
@@ -203,7 +225,7 @@ internal sealed class MqttTransport : IAsyncDisposable
         {
             while (true)
             {
-                int read = await _stream.ReadAsync(_frameReader.GetMemory(), ct).ConfigureAwait(false);
+                int read = await Stream.ReadAsync(_frameReader.GetMemory(), ct).ConfigureAwait(false);
                 if (read == 0)
                 {
                     throw new MqttConnectionLostException("The broker closed the connection.");
@@ -248,7 +270,7 @@ internal sealed class MqttTransport : IAsyncDisposable
                     try
                     {
                         // SslStream does not buffer writes, so a completed write has reached the socket.
-                        await _stream.WriteAsync(frame.Memory, ct).ConfigureAwait(false);
+                        await Stream.WriteAsync(frame.Memory, ct).ConfigureAwait(false);
                         frame.Complete();
                     }
                     catch (Exception ex)

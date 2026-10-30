@@ -6,14 +6,18 @@ namespace Mqtt.Internal.Codec;
 /// Stateless packet decoder. Takes exactly one complete frame (fixed header included) and never
 /// throws on malformed input. Decodes both directions so the test broker can share it.
 /// </summary>
-internal static class MqttDecoder
+internal sealed class MqttDecoder
 {
-    private const string ProtocolName = "MQTT";
+    private readonly FixedHeader _fixedHeader = new();
+    private readonly TopicValidator _topics = new();
+    private readonly ReasonCodeMapper _reasonCodes = new();
 
-    public static DecodeError TryDecode(ReadOnlySpan<byte> frame, ProtocolVersion version, out IMqttPacket? packet)
+    private string ProtocolName => "MQTT";
+
+    public DecodeError TryDecode(ReadOnlySpan<byte> frame, ProtocolVersion version, out IMqttPacket? packet)
     {
         packet = null;
-        if (FixedHeader.TryRead(frame, out byte typeAndFlags, out int remainingLength, out int headerLength) != FrameStatus.Complete
+        if (_fixedHeader.TryRead(frame, out byte typeAndFlags, out int remainingLength, out int headerLength) != FrameStatus.Complete
             || headerLength + remainingLength != frame.Length)
         {
             return DecodeError.MalformedPacket;
@@ -37,9 +41,9 @@ internal static class MqttDecoder
             PacketType.PubAck => DecodePubAck(ref reader, version, out packet),
             PacketType.Subscribe => DecodeSubscribe(ref reader, version, out packet),
             PacketType.SubAck => DecodeSubAck(ref reader, version, out packet),
-            PacketType.PingReq => DecodeEmpty(PingReqPacket.Instance, out packet),
-            PacketType.PingResp => DecodeEmpty(PingRespPacket.Instance, out packet),
-            PacketType.Disconnect => DecodeEmpty(DisconnectPacket.Instance, out packet),
+            PacketType.PingReq => DecodeEmpty(new PingReqPacket(), out packet),
+            PacketType.PingResp => DecodeEmpty(new PingRespPacket(), out packet),
+            PacketType.Disconnect => DecodeEmpty(new DisconnectPacket(), out packet),
 
             // QoS 2 flow and UNSUBSCRIBE are valid MQTT but not implemented by this library.
             PacketType.PubRec or PacketType.PubRel or PacketType.PubComp
@@ -62,7 +66,7 @@ internal static class MqttDecoder
         return error;
     }
 
-    private static DecodeError DecodeConnect(ref MqttReader reader, ProtocolVersion version, out IMqttPacket? packet)
+    private DecodeError DecodeConnect(ref MqttReader reader, ProtocolVersion version, out IMqttPacket? packet)
     {
         packet = null;
         if (!reader.TryReadString(out string protocolName) || protocolName != ProtocolName || !reader.TryReadByte(out byte level))
@@ -109,7 +113,7 @@ internal static class MqttDecoder
         }
     }
 
-    private static DecodeError DecodeConnAck(ref MqttReader reader, ProtocolVersion version, out IMqttPacket? packet)
+    private DecodeError DecodeConnAck(ref MqttReader reader, ProtocolVersion version, out IMqttPacket? packet)
     {
         packet = null;
         switch (version)
@@ -122,7 +126,7 @@ internal static class MqttDecoder
 
                 bool sessionPresent = (ackFlags & 0x01) != 0;
                 if ((ackFlags & 0xFE) != 0
-                    || !ReasonCodeMapper.TryFromConnAckV311(returnCode, out ReasonCode reasonCode)
+                    || !_reasonCodes.TryFromConnAckV311(returnCode, out ReasonCode reasonCode)
                     || (sessionPresent && reasonCode != ReasonCode.Success))
                 {
                     return DecodeError.MalformedPacket;
@@ -135,7 +139,7 @@ internal static class MqttDecoder
         }
     }
 
-    private static DecodeError DecodePublish(ref MqttReader reader, int flags, ProtocolVersion version, out IMqttPacket? packet)
+    private DecodeError DecodePublish(ref MqttReader reader, int flags, ProtocolVersion version, out IMqttPacket? packet)
     {
         packet = null;
         bool dup = (flags & 0x08) != 0;
@@ -154,7 +158,7 @@ internal static class MqttDecoder
         switch (version)
         {
             case ProtocolVersion.V311:
-                if (!reader.TryReadString(out string topic) || !TopicValidator.IsValidTopicName(topic))
+                if (!reader.TryReadString(out string topic) || !_topics.IsValidTopicName(topic))
                 {
                     return DecodeError.MalformedPacket;
                 }
@@ -174,7 +178,7 @@ internal static class MqttDecoder
         }
     }
 
-    private static DecodeError DecodePubAck(ref MqttReader reader, ProtocolVersion version, out IMqttPacket? packet)
+    private DecodeError DecodePubAck(ref MqttReader reader, ProtocolVersion version, out IMqttPacket? packet)
     {
         packet = null;
         switch (version)
@@ -192,7 +196,7 @@ internal static class MqttDecoder
         }
     }
 
-    private static DecodeError DecodeSubscribe(ref MqttReader reader, ProtocolVersion version, out IMqttPacket? packet)
+    private DecodeError DecodeSubscribe(ref MqttReader reader, ProtocolVersion version, out IMqttPacket? packet)
     {
         packet = null;
         switch (version)
@@ -207,7 +211,7 @@ internal static class MqttDecoder
                 while (!reader.IsEmpty)
                 {
                     if (!reader.TryReadString(out string filter)
-                        || !TopicValidator.IsValidTopicFilter(filter)
+                        || !_topics.IsValidTopicFilter(filter)
                         || !reader.TryReadByte(out byte options)
                         || (options & 0xFC) != 0
                         || options == 3)
@@ -230,7 +234,7 @@ internal static class MqttDecoder
         }
     }
 
-    private static DecodeError DecodeSubAck(ref MqttReader reader, ProtocolVersion version, out IMqttPacket? packet)
+    private DecodeError DecodeSubAck(ref MqttReader reader, ProtocolVersion version, out IMqttPacket? packet)
     {
         packet = null;
         switch (version)
@@ -246,7 +250,7 @@ internal static class MqttDecoder
                 for (int i = 0; i < codes.Length; i++)
                 {
                     reasonCodes[i] = (ReasonCode)codes[i];
-                    if (!ReasonCodeMapper.IsValidSubAckV311(reasonCodes[i]))
+                    if (!_reasonCodes.IsValidSubAckV311(reasonCodes[i]))
                     {
                         return DecodeError.MalformedPacket;
                     }
@@ -260,7 +264,7 @@ internal static class MqttDecoder
     }
 
     // A non-empty body is rejected by the caller's IsEmpty check.
-    private static DecodeError DecodeEmpty(IMqttPacket instance, out IMqttPacket? packet)
+    private DecodeError DecodeEmpty(IMqttPacket instance, out IMqttPacket? packet)
     {
         packet = instance;
         return DecodeError.None;

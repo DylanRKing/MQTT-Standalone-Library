@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using Mqtt.Internal.Codec.Packets;
 
 namespace Mqtt.Internal.Codec;
@@ -8,22 +9,26 @@ namespace Mqtt.Internal.Codec;
 /// Invalid packets throw <see cref="ArgumentException"/>: they are built by the library itself, so
 /// a bad one is a bug or an unvalidated caller argument, not a network condition.
 /// </summary>
-internal static class MqttEncoder
+internal sealed class MqttEncoder
 {
-    private const string ProtocolName = "MQTT";
+    private readonly TopicValidator _topics = new();
+    private readonly ReasonCodeMapper _reasonCodes = new();
+    private readonly UTF8Encoding _utf8Strict = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
+    private string ProtocolName => "MQTT";
 
     /// <summary>Returns the total frame size of <paramref name="packet"/>, fixed header included.</summary>
-    public static int GetSize(IMqttPacket packet, ProtocolVersion version)
+    public int GetSize(IMqttPacket packet, ProtocolVersion version)
     {
         int remainingLength = GetRemainingLength(packet, version);
-        return 1 + MqttWriter.GetVariableByteIntegerSize(remainingLength) + remainingLength;
+        return 1 + GetVariableByteIntegerSize(remainingLength) + remainingLength;
     }
 
     /// <summary>Writes the complete frame to <paramref name="destination"/> and returns the bytes written.</summary>
-    public static int Write(Span<byte> destination, IMqttPacket packet, ProtocolVersion version)
+    public int Write(Span<byte> destination, IMqttPacket packet, ProtocolVersion version)
     {
         int remainingLength = GetRemainingLength(packet, version);
-        int size = 1 + MqttWriter.GetVariableByteIntegerSize(remainingLength) + remainingLength;
+        int size = 1 + GetVariableByteIntegerSize(remainingLength) + remainingLength;
         if (destination.Length < size)
         {
             throw new ArgumentException($"Destination is {destination.Length} bytes; packet needs {size}.", nameof(destination));
@@ -37,7 +42,7 @@ internal static class MqttEncoder
         return size;
     }
 
-    private static byte GetTypeAndFlags(IMqttPacket packet)
+    private byte GetTypeAndFlags(IMqttPacket packet)
     {
         byte type = (byte)((byte)packet.Type << 4);
         return packet switch
@@ -48,7 +53,7 @@ internal static class MqttEncoder
         };
     }
 
-    private static int GetRemainingLength(IMqttPacket packet, ProtocolVersion version)
+    private int GetRemainingLength(IMqttPacket packet, ProtocolVersion version)
     {
         ArgumentNullException.ThrowIfNull(packet);
         return packet switch
@@ -64,7 +69,7 @@ internal static class MqttEncoder
         };
     }
 
-    private static void WriteBody(ref MqttWriter writer, IMqttPacket packet, ProtocolVersion version)
+    private void WriteBody(ref MqttWriter writer, IMqttPacket packet, ProtocolVersion version)
     {
         switch (packet)
         {
@@ -91,7 +96,7 @@ internal static class MqttEncoder
 
     // CONNECT
 
-    private static int GetConnectSize(ConnectPacket p, ProtocolVersion version)
+    private int GetConnectSize(ConnectPacket p, ProtocolVersion version)
     {
         switch (version)
         {
@@ -102,13 +107,13 @@ internal static class MqttEncoder
                 }
 
                 // Protocol name, level, connect flags, keep-alive, client ID.
-                return (2 + ProtocolName.Length) + 1 + 1 + 2 + MqttWriter.GetStringSize(p.ClientId, nameof(p.ClientId));
+                return (2 + ProtocolName.Length) + 1 + 1 + 2 + GetStringSize(p.ClientId, nameof(p.ClientId));
             default:
                 throw Unsupported(version);
         }
     }
 
-    private static void WriteConnect(ref MqttWriter writer, ConnectPacket p, ProtocolVersion version)
+    private void WriteConnect(ref MqttWriter writer, ConnectPacket p, ProtocolVersion version)
     {
         switch (version)
         {
@@ -126,12 +131,12 @@ internal static class MqttEncoder
 
     // CONNACK
 
-    private static int GetConnAckSize(ConnAckPacket p, ProtocolVersion version)
+    private int GetConnAckSize(ConnAckPacket p, ProtocolVersion version)
     {
         switch (version)
         {
             case ProtocolVersion.V311:
-                if (!ReasonCodeMapper.TryToConnAckV311(p.ReasonCode, out _))
+                if (!_reasonCodes.TryToConnAckV311(p.ReasonCode, out _))
                 {
                     throw new ArgumentException($"{p.ReasonCode} has no MQTT 3.1.1 CONNACK return code.", nameof(p));
                 }
@@ -147,12 +152,12 @@ internal static class MqttEncoder
         }
     }
 
-    private static void WriteConnAck(ref MqttWriter writer, ConnAckPacket p, ProtocolVersion version)
+    private void WriteConnAck(ref MqttWriter writer, ConnAckPacket p, ProtocolVersion version)
     {
         switch (version)
         {
             case ProtocolVersion.V311:
-                ReasonCodeMapper.TryToConnAckV311(p.ReasonCode, out byte returnCode);
+                _reasonCodes.TryToConnAckV311(p.ReasonCode, out byte returnCode);
                 writer.WriteByte(p.SessionPresent ? (byte)0x01 : (byte)0x00);
                 writer.WriteByte(returnCode);
                 break;
@@ -163,12 +168,12 @@ internal static class MqttEncoder
 
     // PUBLISH
 
-    private static int GetPublishSize(PublishPacket p, ProtocolVersion version)
+    private int GetPublishSize(PublishPacket p, ProtocolVersion version)
     {
         switch (version)
         {
             case ProtocolVersion.V311:
-                if (!TopicValidator.IsValidTopicName(p.Topic))
+                if (!_topics.IsValidTopicName(p.Topic))
                 {
                     throw new ArgumentException("PUBLISH topic must be non-empty and contain no wildcards.", nameof(p));
                 }
@@ -185,7 +190,7 @@ internal static class MqttEncoder
                         throw new ArgumentException($"QoS {(byte)p.Qos} is not supported.", nameof(p));
                 }
 
-                return MqttWriter.GetStringSize(p.Topic, nameof(p.Topic))
+                return GetStringSize(p.Topic, nameof(p.Topic))
                     + (p.Qos == MqttQos.AtMostOnce ? 0 : 2)
                     + p.Payload.Length;
             default:
@@ -193,7 +198,7 @@ internal static class MqttEncoder
         }
     }
 
-    private static void WritePublish(ref MqttWriter writer, PublishPacket p, ProtocolVersion version)
+    private void WritePublish(ref MqttWriter writer, PublishPacket p, ProtocolVersion version)
     {
         switch (version)
         {
@@ -213,7 +218,7 @@ internal static class MqttEncoder
 
     // PUBACK
 
-    private static int GetPubAckSize(PubAckPacket p, ProtocolVersion version)
+    private int GetPubAckSize(PubAckPacket p, ProtocolVersion version)
     {
         switch (version)
         {
@@ -227,7 +232,7 @@ internal static class MqttEncoder
 
     // SUBSCRIBE
 
-    private static int GetSubscribeSize(SubscribePacket p, ProtocolVersion version)
+    private int GetSubscribeSize(SubscribePacket p, ProtocolVersion version)
     {
         switch (version)
         {
@@ -241,7 +246,7 @@ internal static class MqttEncoder
                 int size = 2;
                 foreach (TopicFilter filter in p.Filters)
                 {
-                    if (!TopicValidator.IsValidTopicFilter(filter.Filter))
+                    if (!_topics.IsValidTopicFilter(filter.Filter))
                     {
                         throw new ArgumentException($"Invalid topic filter '{filter.Filter}'.", nameof(p));
                     }
@@ -251,7 +256,7 @@ internal static class MqttEncoder
                         throw new ArgumentException($"QoS {(byte)filter.Qos} is not supported.", nameof(p));
                     }
 
-                    size += MqttWriter.GetStringSize(filter.Filter, nameof(filter.Filter)) + 1;
+                    size += GetStringSize(filter.Filter, nameof(filter.Filter)) + 1;
                 }
 
                 return size;
@@ -260,7 +265,7 @@ internal static class MqttEncoder
         }
     }
 
-    private static void WriteSubscribe(ref MqttWriter writer, SubscribePacket p, ProtocolVersion version)
+    private void WriteSubscribe(ref MqttWriter writer, SubscribePacket p, ProtocolVersion version)
     {
         switch (version)
         {
@@ -280,7 +285,7 @@ internal static class MqttEncoder
 
     // SUBACK
 
-    private static int GetSubAckSize(SubAckPacket p, ProtocolVersion version)
+    private int GetSubAckSize(SubAckPacket p, ProtocolVersion version)
     {
         switch (version)
         {
@@ -293,7 +298,7 @@ internal static class MqttEncoder
 
                 foreach (ReasonCode code in p.ReasonCodes)
                 {
-                    if (!ReasonCodeMapper.IsValidSubAckV311(code))
+                    if (!_reasonCodes.IsValidSubAckV311(code))
                     {
                         throw new ArgumentException($"{code} is not a valid MQTT 3.1.1 SUBACK code.", nameof(p));
                     }
@@ -305,7 +310,7 @@ internal static class MqttEncoder
         }
     }
 
-    private static void WriteSubAck(ref MqttWriter writer, SubAckPacket p, ProtocolVersion version)
+    private void WriteSubAck(ref MqttWriter writer, SubAckPacket p, ProtocolVersion version)
     {
         switch (version)
         {
@@ -322,7 +327,7 @@ internal static class MqttEncoder
         }
     }
 
-    private static void RequirePacketId(ushort packetId, string paramName)
+    private void RequirePacketId(ushort packetId, string paramName)
     {
         if (packetId == 0)
         {
@@ -330,6 +335,48 @@ internal static class MqttEncoder
         }
     }
 
-    private static NotSupportedException Unsupported(ProtocolVersion version) =>
+    private NotSupportedException Unsupported(ProtocolVersion version) =>
         new($"Protocol version {version} is not implemented.");
+
+    /// <summary>Encoded size of the variable-length remaining-length field.</summary>
+    internal int GetVariableByteIntegerSize(int value) => value switch
+    {
+        // 268,435,455 is the largest value four 7-bit groups can carry.
+        < 0 or > 268_435_455 => throw new ArgumentOutOfRangeException(nameof(value), value, "Remaining length exceeds the MQTT maximum of 268,435,455 bytes."),
+        < 128 => 1,
+        < 16_384 => 2,
+        < 2_097_152 => 3,
+        _ => 4,
+    };
+
+    /// <summary>
+    /// Returns the encoded size of a length-prefixed UTF-8 string, throwing if it cannot be encoded
+    /// (over 65,535 bytes or containing U+0000).
+    /// </summary>
+    internal int GetStringSize(string value, string paramName)
+    {
+        ArgumentNullException.ThrowIfNull(value, paramName);
+        if (value.Contains('\0'))
+        {
+            throw new ArgumentException("MQTT strings may not contain U+0000.", paramName);
+        }
+
+        int length;
+        try
+        {
+            length = _utf8Strict.GetByteCount(value);
+        }
+        catch (EncoderFallbackException ex)
+        {
+            throw new ArgumentException("MQTT strings must be valid UTF-16 (no unpaired surrogates).", paramName, ex);
+        }
+
+        // The length prefix is a UInt16.
+        if (length > ushort.MaxValue)
+        {
+            throw new ArgumentException($"MQTT strings are limited to {ushort.MaxValue} UTF-8 bytes; got {length}.", paramName);
+        }
+
+        return 2 + length;
+    }
 }
