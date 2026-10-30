@@ -79,20 +79,31 @@ MQTT_SOAK_MINUTES=240 MQTT_SOAK_DROP_SECONDS=60 dotnet test --filter SoakTests -
 ## Simple client
 
 `src/Mqtt.Simple` is a deliberately minimal alternative to the full library: MQTT 3.1.1 over
-TLS with a client certificate, QoS 0/1, and only connect, publish, subscribe and disconnect. It sends keep-alive pings but has no reconnect,
-offline queue, rate limiting or topic validation. If the connection drops, `Disconnected` fires
-and you create a new client.
+TLS with a client certificate, QoS 0/1, and only connect, publish, subscribe and disconnect. It
+sends keep-alive pings but has no automatic reconnect, offline queue, rate limiting or topic
+validation. If the connection drops, `Disconnected` fires; call `ConnectAsync` again on the same
+client and re-subscribe. It uses no `static` members: everything is created as an instance.
 
 | File | Role |
 | --- | --- |
 | `SimpleMqttClient.cs` | Public API: connect, publish, subscribe, disconnect; read and ping loops; waiting for acks. |
+| `SimpleMqttClientOptions.cs` | Endpoint, client ID, certificates, port, keep-alive and ack timeout. |
+| `AwsCertificateLoader.cs` | Loads the device certificate, private key and root CA from AWS's PEM files. |
 | `Transport/MqttTransport.cs` | TLS connection to AWS; reads and writes whole packets. |
 | `Codec/MqttCodec.cs` | Builds outgoing packets and reads fields from incoming ones. |
 
 ```csharp
-using var cert = SimpleMqttClient.LoadCertificate("device.pem.crt", "private.pem.key");
-await using var client = await SimpleMqttClient.ConnectAsync("abc123-ats.iot.eu-west-1.amazonaws.com", "my-thing", cert);
+var certificates = new AwsCertificateLoader();
+using var cert = certificates.LoadDeviceCertificate("device.pem.crt", "private.pem.key");
+
+await using var client = new SimpleMqttClient(new SimpleMqttClientOptions
+{
+    Host = "abc123-ats.iot.eu-west-1.amazonaws.com",
+    ClientId = "my-thing",
+    Certificate = cert,
+});
 client.MessageReceived += (topic, payload) => Console.WriteLine($"{topic}: {Encoding.UTF8.GetString(payload)}");
+await client.ConnectAsync();
 await client.SubscribeAsync("demo/my-thing", qos: 1);
 await client.PublishAsync("demo/my-thing", "hello", qos: 1);
 await client.DisconnectAsync();
@@ -107,7 +118,7 @@ dotnet run --project samples/Mqtt.Simple.Demo -- <endpoint> <clientId> <certific
 
 Most machines already trust Amazon's root CA. If the TLS handshake fails with a certificate
 chain error, pass `AmazonRootCA1.pem` (from https://www.amazontrust.com/repository/AmazonRootCA1.pem):
-in code, `ConnectAsync(endpoint, clientId, cert, SimpleMqttClient.LoadRootCa("AmazonRootCA1.pem"))`.
+in code, set `RootCa = certificates.LoadRootCa("AmazonRootCA1.pem")` in the options.
 
 The thing's IoT policy must allow `iot:Connect` for the client ID, plus `iot:Publish`,
 `iot:Subscribe` and `iot:Receive` for the topic (default `demo/<clientId>`).

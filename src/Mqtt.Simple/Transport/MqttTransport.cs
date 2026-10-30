@@ -9,22 +9,22 @@ namespace Mqtt.Simple.Transport;
 /// <summary>
 /// A TLS connection to AWS IoT Core that reads and writes whole MQTT packets. Writes are
 /// serialised so packets never interleave; reads must come from one caller at a time.
+/// One instance is one connection: create a new one to connect again.
 /// </summary>
-internal sealed class MqttTransport : IAsyncDisposable
+internal sealed class MqttTransport(string host, int port, X509Certificate2 certificate, X509Certificate2? rootCa) : IAsyncDisposable
 {
-    private readonly SslStream _stream;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private readonly byte[] _oneByte = new byte[1];
+    private SslStream? _stream;
 
-    private MqttTransport(SslStream stream) => _stream = stream;
+    private SslStream Stream => _stream ?? throw new InvalidOperationException("The transport is not connected.");
 
     /// <summary>
-    /// Opens TCP and completes the TLS handshake with the device certificate. With
-    /// <paramref name="rootCa"/> the server is trusted only if its chain ends at that CA;
-    /// without it the operating system's trust store is used.
+    /// Opens TCP and completes the TLS handshake with the device certificate. With a root CA
+    /// the server is trusted only if its chain ends at that CA; without one the operating
+    /// system's trust store is used.
     /// </summary>
-    public static async Task<MqttTransport> ConnectAsync(
-        string host, int port, X509Certificate2 certificate, X509Certificate2? rootCa, CancellationToken ct)
+    public async Task ConnectAsync(CancellationToken ct)
     {
         var tcp = new TcpClient { NoDelay = true };
         SslStream? stream = null;
@@ -46,7 +46,7 @@ internal sealed class MqttTransport : IAsyncDisposable
                     },
                 },
                 ct);
-            return new MqttTransport(stream);
+            _stream = stream;
         }
         catch
         {
@@ -67,7 +67,7 @@ internal sealed class MqttTransport : IAsyncDisposable
         await _writeLock.WaitAsync(ct);
         try
         {
-            await _stream.WriteAsync(frame, ct);
+            await Stream.WriteAsync(frame, ct);
         }
         catch (ObjectDisposedException ex)
         {
@@ -97,15 +97,15 @@ internal sealed class MqttTransport : IAsyncDisposable
         }
 
         var body = new byte[length];
-        await _stream.ReadExactlyAsync(body, ct);
+        await Stream.ReadExactlyAsync(body, ct);
         return new Packet(header, body);
     }
 
-    public ValueTask DisposeAsync() => _stream.DisposeAsync();
+    public ValueTask DisposeAsync() => _stream?.DisposeAsync() ?? ValueTask.CompletedTask;
 
     private async Task<byte> ReadByteAsync(CancellationToken ct)
     {
-        await _stream.ReadExactlyAsync(_oneByte, ct);
+        await Stream.ReadExactlyAsync(_oneByte, ct);
         return _oneByte[0];
     }
 }

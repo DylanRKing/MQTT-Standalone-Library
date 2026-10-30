@@ -18,11 +18,20 @@ string endpoint = args[0];
 string clientId = args[1];
 string topic = args.Length > 5 ? args[5] : $"demo/{clientId}";
 
-using var certificate = SimpleMqttClient.LoadCertificate(args[2], args[3]);
-using X509Certificate2? rootCa = args.Length > 4 ? SimpleMqttClient.LoadRootCa(args[4]) : null;
+var certificates = new AwsCertificateLoader();
+using X509Certificate2 certificate = certificates.LoadDeviceCertificate(args[2], args[3]);
+using X509Certificate2? rootCa = args.Length > 4 ? certificates.LoadRootCa(args[4]) : null;
+
+await using var client = new SimpleMqttClient(new SimpleMqttClientOptions
+{
+    Host = endpoint,
+    ClientId = clientId,
+    Certificate = certificate,
+    RootCa = rootCa,
+});
 
 Console.WriteLine($"Connecting to {endpoint} as {clientId}...");
-await using SimpleMqttClient client = await SimpleMqttClient.ConnectAsync(endpoint, clientId, certificate, rootCa);
+await client.ConnectAsync();
 Console.WriteLine("Connected.");
 
 client.MessageReceived += (t, payload) => Console.WriteLine($"<- [{t}] {Encoding.UTF8.GetString(payload)}");
